@@ -1,6 +1,4 @@
-*** Structure du projet ***
-
-´´
+```text
 projet_neutronique/
 │
 ├── core/                       # Moteur de calcul Éléments Finis
@@ -34,4 +32,4 @@ projet_neutronique/
 │
 ├── main.py                     # Script d'entrée générique (facultatif si utilisation du dossier cases/)
 └── requirements.txt            # Dépendances (numpy, scipy, matplotlib, gmsh, etc.)
-´´
+```
