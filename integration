@@ -1,0 +1,294 @@
+"""
+Schéma theta et Crank-Nicolson pour une équation de diffusion 2D.
+
+Équation de diffusion :
+    (1/v) * (∂φ/∂t) = ∇·(D*∇ϕ) +   (vΣf - Σa)ϕ.
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+from scipy.linalg import solve_banded
+
+
+# ─────────────────────────────────────────────
+# 1. PARAMÈTRES DU PROBLÈME
+# ─────────────────────────────────────────────
+
+# Domaine spatial [x_min, x_max][y_min, y_max] et temporel [0, T]
+x_min, x_max = 0.0, 1.0
+y_min, y_max = 0.0, 1.0
+T            = ?
+Nx           = ?            # nombre d'intervalles spatiaux
+Ny           = ? 
+Nt           = ?         # nombre de pas de temps
+
+dx = (x_max - x_min) / Nx
+dy = (y_max - y_min) / Ny
+dt = T / Nt
+x  = np.linspace(x_min, x_max, Nx + 1)   # N+1 nœuds intérieurs + bords
+y  = np.linspace(x_min, x_max, Nx + 1)
+t  = np.linspace(0.0, T, Nt + 1)
+
+
+# ─────────────────────────────────────────────
+# 2. DONNÉES DU PROBLÈME  ###  ADAPTER  ###
+# ─────────────────────────────────────────────
+
+def diffusivity(x, t):
+    """Coefficient de diffusion D(x,t). Remplace par ta loi."""
+    return 1.0                            # diffusion constante
+
+def source(x, t):
+    """Terme source f(x,t). Remplace par ta loi."""
+    return 0.0 * x                        # pas de source
+
+def initial_condition(x):
+    """Condition initiale u(x, 0). Remplace par ta CI."""
+    return np.sin(np.pi * x)             # exemple : sin(πx)
+
+def boundary_left(t):
+    """Condition au bord gauche u(x_min, t). Remplace par ta CL."""
+    return 0.0
+
+def boundary_right(t):
+    """Condition au bord droit u(x_max, t). Remplace par ta CL."""
+    return 0.0
+
+def exact_solution(x, t):
+    """Solution analytique (si connue) pour validation. Sinon retourne None."""
+    # Pour D=1, sin(πx), CL=0 : solution = sin(πx) * exp(-π²t)
+    return np.sin(np.pi * x) * np.exp(-(np.pi**2) * t)
+    # return None   # décommente si pas de solution exacte
+
+
+# ─────────────────────────────────────────────
+# 3. ASSEMBLAGE DE LA MATRICE TRIDIAGONALE
+# ─────────────────────────────────────────────
+
+def build_matrix(u, t_n, theta):
+    """
+    Construit A et B tels que A · u^{n+1} = B · u^n + source
+    pour le schéma theta.
+
+    Système intérieur (indices 1..Nx-1) :
+      u_i^{n+1} - u_i^n          sous-diag   diag        sur-diag
+      ─────────────── = theta * [ r_i * u_{i-1}^{n+1}
+           dt                    - 2r_i * u_i^{n+1}
+                                 + r_i * u_{i+1}^{n+1} ]
+                     + (1-theta) * [ idem avec niveau n ]
+
+    où r_i = D_i / dx²
+
+    Retourne (ab_A, ab_B, f) avec ab_A au format banded (scipy).
+    """
+    N    = Nx - 1           # nombre de nœuds intérieurs
+    diag = np.zeros(N)
+    lo   = np.zeros(N - 1)  # sous-diagonale
+    up   = np.zeros(N - 1)  # sur-diagonale
+
+    # Coefficients de diffusion aux nœuds intérieurs
+    D = np.array([diffusivity(x[i], t_n) for i in range(1, Nx)])
+    r = D * dt / dx**2
+
+    # Matrice A (partie implicite, niveau n+1)
+    diag[:] = 1.0 + 2.0 * theta * r
+    lo[:]   = -theta * r[1:]
+    up[:]   = -theta * r[:-1]
+
+    # Format banded (scipy solve_banded) : 1 diag au-dessus, 1 en-dessous
+    ab_A = np.zeros((3, N))
+    ab_A[0, 1:] = up          # sur-diagonale
+    ab_A[1, :]  = diag        # diagonale
+    ab_A[2, :-1] = lo         # sous-diagonale
+
+    # Second membre B · u^n
+    u_int = u[1:Nx]
+    rhs   = u_int.copy()
+    rhs  += (1.0 - theta) * r * (u[0:Nx-1] - 2*u[1:Nx] + u[2:Nx+1])
+
+    # Terme source (moyenne temporelle pour CN, sinon instant t_n)
+    f = np.array([source(x[i], t_n) for i in range(1, Nx)])
+    rhs += dt * f
+
+    return ab_A, rhs
+
+
+# ─────────────────────────────────────────────
+# 4. BOUCLE EN TEMPS GÉNÉRIQUE
+# ─────────────────────────────────────────────
+
+def run_scheme(theta, label=""):
+    """
+    Intègre l'équation de diffusion avec le schéma theta.
+    theta = 0   → Euler explicite
+    theta = 0.5 → Crank-Nicolson
+    theta = 1   → Euler implicite
+
+    Retourne (u_final, t_cpu).
+    """
+    u = initial_condition(x).copy()
+
+    # Appliquer les conditions aux bords à t=0
+    u[0]  = boundary_left(0.0)
+    u[-1] = boundary_right(0.0)
+
+    t_start = time.perf_counter()
+
+    for n in range(Nt):
+        t_n   = t[n]
+        t_n1  = t[n + 1]
+
+        if theta == 0.0:
+            # Euler explicite : mise à jour directe (pas de système linéaire)
+            D    = np.array([diffusivity(x[i], t_n) for i in range(1, Nx)])
+            r    = D * dt / dx**2
+            u_int = u[1:Nx] + r * (u[0:Nx-1] - 2*u[1:Nx] + u[2:Nx+1])
+            f     = np.array([source(x[i], t_n) for i in range(1, Nx)])
+            u_int += dt * f
+            u[1:Nx] = u_int
+        else:
+            # Implicite ou Crank-Nicolson : résolution du système tridiagonal
+            ab_A, rhs = build_matrix(u, t_n, theta)
+
+            # Correction du RHS pour les conditions aux bords
+            rhs[0]  += theta * (diffusivity(x[1], t_n1) * dt / dx**2) * boundary_left(t_n1)
+            rhs[-1] += theta * (diffusivity(x[Nx-1], t_n1) * dt / dx**2) * boundary_right(t_n1)
+
+            u[1:Nx] = solve_banded((1, 1), ab_A, rhs)
+
+        # Conditions aux bords
+        u[0]  = boundary_left(t_n1)
+        u[-1] = boundary_right(t_n1)
+
+    t_cpu = time.perf_counter() - t_start
+    return u, t_cpu
+
+
+# ─────────────────────────────────────────────
+# 5. RÉSOLUTION ET COMPARAISON
+# ─────────────────────────────────────────────
+
+def compute_error(u_num, t_final):
+    """Erreur L2 et L∞ par rapport à la solution exacte."""
+    u_ex = exact_solution(x, t_final)
+    if u_ex is None:
+        return None, None
+    err  = u_num - u_ex
+    l2   = np.sqrt(dx * np.sum(err**2))
+    linf = np.max(np.abs(err))
+    return l2, linf
+
+
+def compare_schemes():
+    print(f"Paramètres : Nx={Nx}, Nt={Nt}, dx={dx:.4f}, dt={dt:.4f}")
+    print(f"Nombre de Fourier r = D*dt/dx² = {dt/dx**2:.4f}\n")
+
+    schemes = [
+        (0.0,  "Euler explicite"),
+        (0.5,  "Crank-Nicolson"),
+        (1.0,  "Euler implicite"),
+    ]
+
+    results = {}
+    for theta, label in schemes:
+        u_final, t_cpu = run_scheme(theta, label)
+        l2, linf = compute_error(u_final, T)
+        results[label] = {"u": u_final, "l2": l2, "linf": linf, "cpu": t_cpu}
+
+        print(f"{label:<22} | CPU : {t_cpu*1000:6.2f} ms", end="")
+        if l2 is not None:
+            print(f" | erreur L2 : {l2:.2e}  |  erreur L∞ : {linf:.2e}", end="")
+        print()
+
+    return results
+
+
+# ─────────────────────────────────────────────
+# 6. CONVERGENCE EN Δt (optionnel)
+# ─────────────────────────────────────────────
+
+def convergence_study(theta, label, Nt_list=None):
+    """
+    Calcule l'ordre de convergence en Δt pour un schéma donné.
+    Fixe Nx et fait varier Nt.
+    """
+    if Nt_list is None:
+        Nt_list = [25, 50, 100, 200, 400]
+
+    global Nt, dt, t
+    errors_l2 = []
+    dts = []
+
+    for nt in Nt_list:
+        Nt = nt
+        dt = T / Nt
+        t  = np.linspace(0.0, T, Nt + 1)
+        u_final, _ = run_scheme(theta)
+        l2, _ = compute_error(u_final, T)
+        if l2 is not None:
+            errors_l2.append(l2)
+            dts.append(dt)
+
+    dts   = np.array(dts)
+    errs  = np.array(errors_l2)
+    rates = np.log(errs[:-1] / errs[1:]) / np.log(dts[:-1] / dts[1:])
+    print(f"\nConvergence {label} (ordre en Δt) :")
+    for i, r in enumerate(rates):
+        print(f"  Nt={Nt_list[i]}→{Nt_list[i+1]} : ordre ≈ {r:.2f}")
+
+    return dts, errs
+
+
+# ─────────────────────────────────────────────
+# 7. VISUALISATION
+# ─────────────────────────────────────────────
+
+def plot_results(results):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # ── Profils finaux
+    ax = axes[0]
+    for label, res in results.items():
+        ax.plot(x, res["u"], label=label)
+    u_ex = exact_solution(x, T)
+    if u_ex is not None:
+        ax.plot(x, u_ex, "k--", lw=2, label="Solution exacte")
+    ax.set_title(f"Profil u(x, T={T})")
+    ax.set_xlabel("x")
+    ax.set_ylabel("u")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # ── Erreurs L2
+    ax = axes[1]
+    labels  = list(results.keys())
+    l2_errs = [results[l]["l2"] for l in labels]
+    colors  = ["#7F77DD", "#1D9E75", "#D85A30"]
+    valid   = [(l, e, c) for l, e, c in zip(labels, l2_errs, colors) if e is not None]
+    if valid:
+        lbs, errs, cols = zip(*valid)
+        bars = ax.bar(lbs, errs, color=cols, alpha=0.85, edgecolor="white")
+        ax.bar_label(bars, fmt="%.2e", fontsize=9)
+        ax.set_title("Erreur L2 vs solution exacte")
+        ax.set_ylabel("‖u_num − u_ex‖₂")
+        ax.set_yscale("log")
+        ax.grid(True, axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("comparaison_schemas.png", dpi=150)
+    plt.show()
+
+
+# ─────────────────────────────────────────────
+# 8. POINT D'ENTRÉE
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    results = compare_schemes()
+    plot_results(results)
+
+    # Étude de convergence (décommenter si besoin)
+    # Nt_save = Nt
+    # convergence_study(0.5, "Crank-Nicolson")
+    # convergence_study(1.0, "Euler implicite")
+    # Nt = Nt_save; dt = T / Nt; t = np.linspace(0.0, T, Nt + 1)
