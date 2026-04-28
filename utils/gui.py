@@ -10,6 +10,8 @@ import sys
 import os
 import threading
 
+from core.solver import run_full_simulation
+
 # Configuration du thème sombre strict pour Matplotlib
 plt.style.use('dark_background')
 
@@ -81,6 +83,20 @@ class ReactorGUI(tk.Tk):
 
         self.create_widgets()
 
+    def action_solve(self):
+        p = self.get_current_params()
+        # On définit le chemin du fichier
+        output_file = "output/meshes/reactor_core.msh"
+        
+        # 1. On s'assure que le maillage est à jour
+        self.action_gmsh_auto() 
+        
+        # 2. On lance le calcul
+        try:
+            run_full_simulation(output_file)
+        except Exception as e:
+            messagebox.showerror("Erreur de calcul", f"Le solver a échoué :\n{e}")
+
     def create_widgets(self):
         main_container = ttk.Frame(self, padding=(20, 20))
         main_container.pack(fill="both", expand=True)
@@ -134,6 +150,11 @@ class ReactorGUI(tk.Tk):
         ttk.Button(btn_container, text="Générer Maillage (Auto)", width=btn_width, command=self.action_gmsh_auto, style="Accent.TButton").pack(pady=(0, 5))
         ttk.Button(btn_container, text="Sélection Manuelle (Pinceau)", width=btn_width, command=self.action_manual_selection, style="Success.TButton").pack(pady=(0, 15))
         
+        btn_solve = ttk.Button(btn_container, text="🚀 Lancer la Simulation", 
+                       width=btn_width, command=self.action_solve, 
+                       style="Accent.TButton")
+        btn_solve.pack(pady=(5, 0))
+
         ttk.Separator(btn_container, orient='horizontal').pack(fill='x', pady=5)
         ttk.Button(btn_container, text="Étude Paramétrique (Batch)", width=btn_width, command=self.action_parametric_setup, style="Warning.TButton").pack(pady=(5, 0))
 

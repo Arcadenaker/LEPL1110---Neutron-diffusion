@@ -63,18 +63,17 @@ def get_material_properties(mesh, elem_tags):
     nuSigma_f_vec = np.zeros(ne)
     inv_v_vec = np.zeros(ne)
 
-    # meshio stocke typiquement les noms dans mesh.field_data ou mesh.cell_sets
     # On itère sur notre base de données physique pour peupler les vecteurs mathématiques
     for mat_name, props in MATERIAL_DB.items():
         if mat_name in mesh.cell_sets:
-            # On récupère les indices des éléments (ex: triangles) appartenant à ce groupe physique
+            # On récupère les indices des éléments appartenant à ce groupe physique
             indices = mesh.cell_sets[mat_name]["triangle"]
             
-            D_vec[indices] = props
-            Sigma_a_vec[indices] = props
-            nuSigma_f_vec[indices] = props
+            D_vec[indices] = props["D"]
+            Sigma_a_vec[indices] = props["Sigma_a"]
+            nuSigma_f_vec[indices] = props["nuSigma_f"]
             
-            # On stocke l'inverse de la vitesse (1/v) pour optimiser les calculs du terme temporel
+            # On stocke l'inverse de la vitesse
             inv_v_vec[indices] = 1.0 / props["v"]
             
     return D_vec, Sigma_a_vec, nuSigma_f_vec, inv_v_vec
