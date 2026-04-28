@@ -50,55 +50,74 @@ def run_full_simulation(mesh_path):
     mesh = meshio.read(mesh_path)
     nn = len(mesh.points)
     
-    # 1. Extraction des données géométriques
+    # 1. Extraction des données géométriques et tags
+    # On identifie les groupes physiques pour savoir où est le Fuel et les Barres
+    from core.solver import extract_p1_fem_data # On garde ton extracteur
     conn, det, w, N, jacobians, gradN_ref = extract_p1_fem_data(mesh)
-    ne = len(conn)
-    ngp = len(w)
-    nloc = 3
     
-    # 2. Physique réelle via materials.py (avec 'conn' passé en argument)
-    print("Application des propriétés physiques...")
-    c_D, c_Sigma_a, c_nuSigma_f, c_inv_v = get_material_properties(mesh, conn)
-    c_R = c_nuSigma_f - c_Sigma_a
-
-    # 3. Assemblage des matrices
-    print(f"Assemblage des matrices ({ne} éléments)...")
-    M = assemble_mass_or_reaction(nn, ne, nloc, ngp, conn, det, w, N, c_inv_v)
-    R = assemble_mass_or_reaction(nn, ne, nloc, ngp, conn, det, w, N, c_R)
-    K = assemble_stiffness(nn, ne, nloc, ngp, conn, det, w, jacobians, gradN_ref, c_D)
-
-    # 4. Conditions aux limites (Tag 1000 pour le bord extérieur)
-    dirichlet_dofs = get_dirichlet_nodes(mesh, ["OuterBoundary"])
+    # 2. Définition du Scénario et du Pilote
+    # [LOGIC] On définit une puissance cible (somme du flux neutronique)
+    PUISSANCE_CIBLE = 50000.0 
     
-    # 5. Intégration Temporelle
-    print("Démarrage de la simulation temporelle...")
-    integrateur = TimeIntegrator(M, K, R, dirichlet_dofs, theta=1.0)
-    
-    # --- NOUVELLE INITIALISATION PHYSIQUE ---
-    # On va chercher tous les nœuds (points) qui composent le combustible
-    fuel_nodes = []
-    if "Fuel" in mesh.cell_sets:
-        for block_id, elem_indices in enumerate(mesh.cell_sets["Fuel"]):
-            cell_block = mesh.cells[block_id]
-            if cell_block.type == 'triangle':
-                # On récupère tous les sommets des triangles de ce bloc
-                nodes = cell_block.data[elem_indices]
-                fuel_nodes.extend(nodes.flatten())
+    def pilote_automatique_intelligent(phi_actuel, phi_precedent, position_barres):
+        """
+        Pilote Proportionnel : Ajuste les barres en fonction de la distance à la cible.
+        """
+        puissance_t = np.sum(phi_actuel)
+        
+        # 1. Calcul de l'erreur relative (-1.0 = vide absolu, 0.0 = parfait, >0 = surpuissance)
+        erreur = (puissance_t - PUISSANCE_CIBLE) / PUISSANCE_CIBLE
+        
+        # 2. Gain proportionnel (la "nervosité" du pilote)
+        Kp = 0.15 
+        
+        # 3. Calcul du mouvement demandé
+        # Si erreur est positive (trop de puissance), on veut insérer (delta positif)
+        delta_pos = Kp * erreur 
+        
+        # 4. Sécurité : On bride la vitesse physique des mécanismes (max 2% de course par pas de temps)
+        delta_pos = np.clip(delta_pos, -0.02, 0.02)
+        
+        # 5. Application et butées physiques des barres (entre 0.0 et 1.0)
+        nouvelle_pos = np.clip(position_barres + delta_pos, 0.0, 1.0)
                 
-    fuel_nodes = np.unique(fuel_nodes) # On supprime les doublons
-    
-    # Création du flux initial : 0 partout...
-    phi_0 = np.zeros(nn)
-    
-    # ... sauf dans le combustible où on allume "les braises" !
-    if len(fuel_nodes) > 0:
-        phi_0[fuel_nodes] = 100.0
-    else:
-        # Fallback de sécurité si aucun fuel n'est trouvé
-        phi_0[np.argmin(mesh.points[:, 0]**2 + mesh.points[:, 1]**2)] = 100.0
-    # ----------------------------------------
+        return nouvelle_pos
 
-    times, solutions = integrateur.integrate(phi_0, t_span=(0.0, 0.002), n_steps=200)
+    # 3. Pré-assemblage des matrices fixes
+    # M (Masse) et K (Diffusion/Fuites) ne changent jamais
+    print("Assemblage des structures fixes...")
+    c_D, c_Sigma_a, c_nuSigma_f, c_inv_v = get_material_properties(mesh, conn, rod_insertion=1.0)
+    
+    M = assemble_mass_or_reaction(nn, len(conn), 3, len(w), conn, det, w, N, c_inv_v)
+    K = assemble_stiffness(nn, len(conn), 3, len(w), conn, det, w, jacobians, gradN_ref, c_D)
+    
+    # Matrice R initiale (pourra être mise à jour par l'intégrateur)
+    c_R = c_nuSigma_f - c_Sigma_a
+    R_init = assemble_mass_or_reaction(nn, len(conn), 3, len(w), conn, det, w, N, c_R)
+
+    # 4. Lancement de la Simulation CINÉTIQUE
+    print("Démarrage du pilotage dynamique...")
+
+    noeuds_bords = get_dirichlet_nodes(mesh, ["OuterBoundary"])
+    integrateur = TimeIntegrator(M, K, R_init, noeuds_bords, theta=1.0)
+    
+    # Initialisation : flux nul partout sauf un peu de 'bruit' pour démarrer
+    phi_0 = np.ones(nn) * 10.0 
+    
+    # [LOGIC] On passe toutes les fonctions nécessaires à l'intégrateur 
+    # pour qu'il puisse recalculer la physique en boucle.
+    times, solutions, final_pos = integrateur.integrate(
+        phi_0, 
+        t_span=(0.0, 0.05), 
+        n_steps=100,
+        mesh=mesh,
+        elem_tags=conn, 
+        det=det,           # <-- NOUVEAU
+        w=w,               # <-- NOUVEAU
+        N=N,               # <-- NOUVEAU
+        get_props_func=get_material_properties,
+        pilot_callback=pilote_automatique_intelligent
+    )
     
     # 6. Visualisation du résultat final (Animation du transitoire)
     print("Génération de l'animation...")
