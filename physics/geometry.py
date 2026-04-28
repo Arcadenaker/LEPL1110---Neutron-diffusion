@@ -392,7 +392,7 @@ class ReactorMeshGenerator:
 
         # 2. Fragmentation Booléenne (Étape critique pour les Éléments Finis)
         # La fonction 'fragment' calcule les intersections entre toutes les entités.
-        # Elle découpe le grand disque du réflecteur avec les hexagones, etévide
+        # Elle découpe le grand disque du réflecteur avec les hexagones, et évide
         # les hexagones pour y placer les crayons.
         # Objectif : Obtenir un maillage CONFORME (les nœuds à la frontière entre
         # le combustible et le modérateur seront partagés par les deux domaines).
@@ -468,14 +468,52 @@ class ReactorMeshGenerator:
         gmsh.model.addPhysicalGroup(1, outer_boundary, 1000)
         gmsh.model.setPhysicalName(1, 1000, "OuterBoundary")
 
-        # 4. Paramétrage des champs de taille de maille (Mesh Size)
-        # Définit la résolution globale (taille maximale des triangles).
-        gmsh.option.setNumber("Mesh.MeshSizeMax", R_hex / 2.0)
+        # 4. Paramétrage avancé des tailles de mailles (Gmsh Fields)
 
-        # S'assure que les crayons, géométriquement plus petits, soient suffisamment
-        # résolus pour capturer les gradients de flux neutronique (au moins 4 éléments sur le diamètre).
-        if r_fuel > 0:
-            gmsh.option.setNumber("Mesh.MeshSizeMin", r_fuel / 4.0)
+        # On définit les tailles extrêmes (très fin pour le combustible, très large pour le réflecteur)
+        size_min = r_fuel / 4.0 if r_fuel > 0 else 0.05
+        size_max = R_hex / 1.5
+
+        gmsh.option.setNumber("Mesh.MeshSizeMin", size_min)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", size_max)
+
+        # --- 4.1. Champ de Distance ---
+        # Gmsh va calculer la distance entre chaque point de l'espace et les surfaces des crayons.
+        gmsh.model.mesh.field.add("Distance", 1)
+        all_pins = pg_fuel_pins + pg_cr_pins
+        if all_pins:
+            gmsh.model.mesh.field.setNumbers(1, "SurfacesList", all_pins)
+
+        # --- 4.2. Champ de Seuil (Threshold) ---
+        # Ce champ traduit la distance (calculée au-dessus) en taille de triangle, créant le gradient.
+        gmsh.model.mesh.field.add("Threshold", 2)
+        gmsh.model.mesh.field.setNumber(
+            2, "InField", 1
+        )  # Se base sur la distance aux crayons
+        gmsh.model.mesh.field.setNumber(
+            2, "SizeMin", size_min
+        )  # Taille à l'intérieur et juste autour des crayons
+        gmsh.model.mesh.field.setNumber(
+            2, "SizeMax", size_max
+        )  # Taille loin dans le réflecteur
+        gmsh.model.mesh.field.setNumber(
+            2, "DistMin", r_fuel * 0.2
+        )  # Jusqu'à cette distance, le maillage reste ultra-fin
+        gmsh.model.mesh.field.setNumber(
+            2, "DistMax", R_hex * 1.5
+        )  # Distance sur laquelle le triangle grossit progressivement
+
+        # On active ce champ comme "règle absolue" pour générer le maillage
+        gmsh.model.mesh.field.setAsBackgroundMesh(2)
+
+        # --- 4.3. Optimisations Gmsh ---
+        # On désactive la propagation par défaut pour que seul notre gradient dicte la loi
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+
+        # On garde l'adaptation à la courbure pour assurer que les ronds soient parfaits
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
+        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", 16)
 
         # 5. Génération et Exportation
         # Appel du moteur de maillage 2D de Gmsh (algorithmes de Delaunay/Frontal).
