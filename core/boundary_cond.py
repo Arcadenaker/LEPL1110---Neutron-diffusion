@@ -1,15 +1,14 @@
 import numpy as np
 
-def get_dirichlet_nodes(mesh, boundary_physical_tags):
+def get_dirichlet_nodes(mesh, boundary_names):
     """
     Dans un réacteur, on a besoin de savoir où les neutrons
     s'échappent (-> sur les bords). GMSH le prend en compte avec des tags physiques.
     """
     boundary_nodes = []
     
-    for tag in boundary_physical_tags:
-        tag_name = f"gmsh:physical:{tag}" 
-        
+    for tag_name in boundary_names:
+        # On utilise directement le nom du tag (ex: "OuterBoundary")
         if tag_name in mesh.cell_sets:
             for block_id, elem_indices in enumerate(mesh.cell_sets[tag_name]):
                 if len(elem_indices) > 0:

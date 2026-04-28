@@ -68,16 +68,25 @@ def run_full_simulation(mesh_path):
     K = assemble_stiffness(nn, ne, nloc, ngp, conn, det, w, jacobians, gradN_ref, c_D)
 
     # 4. Conditions aux limites (Tag 1000 pour le bord extérieur)
-    dirichlet_dofs = get_dirichlet_nodes(mesh, [1000])
+    dirichlet_dofs = get_dirichlet_nodes(mesh, ["OuterBoundary"])
     
     # 5. Intégration Temporelle
     print("Démarrage de la simulation temporelle...")
-    integrateur = TimeIntegrator(M, K, R, dirichlet_dofs, theta=0.5)
+    
+    # On utilise Euler Implicite (theta=1.0) qui est ultra-stable 
+    # et "lisse" les instabilités au lieu de les faire osciller.
+    integrateur = TimeIntegrator(M, K, R, dirichlet_dofs, theta=1.0)
+    
+    # On trouve le VRAI nœud central (celui le plus proche de x=0, y=0)
+    distances_au_centre = mesh.points[:, 0]**2 + mesh.points[:, 1]**2
+    noeud_central = np.argmin(distances_au_centre)
     
     phi_0 = np.zeros(nn)
-    phi_0[nn//2] = 100.0 # Impulsion centrale
+    phi_0[noeud_central] = 100.0 # Impulsion au vrai centre
     
-    times, solutions = integrateur.integrate(phi_0, t_span=(0.0, 1.0), n_steps=50)
+    # On réduit le temps total à 2 millisecondes pour observer la dynamique très rapide
+    # des neutrons, tout en augmentant le nombre d'étapes.
+    times, solutions = integrateur.integrate(phi_0, t_span=(0.0, 0.002), n_steps=200)
     
     # 6. Visualisation du résultat final
     print("Génération de l'affichage...")

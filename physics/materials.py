@@ -57,23 +57,44 @@ def get_material_properties(mesh, elem_tags):
     Crée les vecteurs de propriétés pour chaque élément à partir des noms de matériaux
     définis dans le maillage (mesh) et fait le lien avec la MATERIAL_DB.
     """
-    ne = len(elem_tags)
+    ne = len(elem_tags) # Correspond à la taille géante concaténée
     D_vec = np.zeros(ne)
     Sigma_a_vec = np.zeros(ne)
     nuSigma_f_vec = np.zeros(ne)
     inv_v_vec = np.zeros(ne)
 
-    # On itère sur notre base de données physique pour peupler les vecteurs mathématiques
-    for mat_name, props in MATERIAL_DB.items():
-        if mat_name in mesh.cell_sets:
-            # On récupère les indices des éléments appartenant à ce groupe physique
-            indices = mesh.cell_sets[mat_name]["triangle"]
+    # 1. Calcul du décalage (offset) pour chaque bloc de triangles
+    # Permet de synchroniser les index locaux de meshio avec le grand vecteur global
+    triangle_offsets = {}
+    current_offset = 0
+    
+    for block_id, cell_block in enumerate(mesh.cells):
+        if cell_block.type == 'triangle':
+            triangle_offsets[block_id] = current_offset
+            current_offset += len(cell_block.data)
+
+    # 2. Création du pont entre les noms du maillage Gmsh et la base de données
+    mapping = {
+        "Fuel": "Fuel_Uranium",
+        "Moderator": "Water_Moderator", 
+        "ControlRods": "Boral_ControlRod",
+        "Reflector": "Graphite_Moderator"
+    }
+
+    # 3. Remplissage des vecteurs physiques avec l'offset
+    for mesh_name, db_name in mapping.items():
+        if mesh_name in mesh.cell_sets:
+            props = MATERIAL_DB[db_name]
             
-            D_vec[indices] = props["D"]
-            Sigma_a_vec[indices] = props["Sigma_a"]
-            nuSigma_f_vec[indices] = props["nuSigma_f"]
-            
-            # On stocke l'inverse de la vitesse
-            inv_v_vec[indices] = 1.0 / props["v"]
+            for block_id, elem_indices in enumerate(mesh.cell_sets[mesh_name]):
+                if len(elem_indices) > 0 and mesh.cells[block_id].type == 'triangle':
+                    
+                    # On convertit l'index local du bloc en index global
+                    global_indices = elem_indices + triangle_offsets[block_id]
+                    
+                    D_vec[global_indices] = props["D"]
+                    Sigma_a_vec[global_indices] = props["Sigma_a"]
+                    nuSigma_f_vec[global_indices] = props["nuSigma_f"]
+                    inv_v_vec[global_indices] = 1.0 / props["v"]
             
     return D_vec, Sigma_a_vec, nuSigma_f_vec, inv_v_vec
