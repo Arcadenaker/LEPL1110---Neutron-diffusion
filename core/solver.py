@@ -72,29 +72,75 @@ def run_full_simulation(mesh_path):
     
     # 5. Intégration Temporelle
     print("Démarrage de la simulation temporelle...")
-    
-    # On utilise Euler Implicite (theta=1.0) qui est ultra-stable 
-    # et "lisse" les instabilités au lieu de les faire osciller.
     integrateur = TimeIntegrator(M, K, R, dirichlet_dofs, theta=1.0)
     
-    # On trouve le VRAI nœud central (celui le plus proche de x=0, y=0)
-    distances_au_centre = mesh.points[:, 0]**2 + mesh.points[:, 1]**2
-    noeud_central = np.argmin(distances_au_centre)
+    # --- NOUVELLE INITIALISATION PHYSIQUE ---
+    # On va chercher tous les nœuds (points) qui composent le combustible
+    fuel_nodes = []
+    if "Fuel" in mesh.cell_sets:
+        for block_id, elem_indices in enumerate(mesh.cell_sets["Fuel"]):
+            cell_block = mesh.cells[block_id]
+            if cell_block.type == 'triangle':
+                # On récupère tous les sommets des triangles de ce bloc
+                nodes = cell_block.data[elem_indices]
+                fuel_nodes.extend(nodes.flatten())
+                
+    fuel_nodes = np.unique(fuel_nodes) # On supprime les doublons
     
+    # Création du flux initial : 0 partout...
     phi_0 = np.zeros(nn)
-    phi_0[noeud_central] = 100.0 # Impulsion au vrai centre
     
-    # On réduit le temps total à 2 millisecondes pour observer la dynamique très rapide
-    # des neutrons, tout en augmentant le nombre d'étapes.
+    # ... sauf dans le combustible où on allume "les braises" !
+    if len(fuel_nodes) > 0:
+        phi_0[fuel_nodes] = 100.0
+    else:
+        # Fallback de sécurité si aucun fuel n'est trouvé
+        phi_0[np.argmin(mesh.points[:, 0]**2 + mesh.points[:, 1]**2)] = 100.0
+    # ----------------------------------------
+
     times, solutions = integrateur.integrate(phi_0, t_span=(0.0, 0.002), n_steps=200)
     
-    # 6. Visualisation du résultat final
-    print("Génération de l'affichage...")
-    plt.figure(figsize=(8, 6))
-    plt.tricontourf(mesh.points[:,0], mesh.points[:,1], solutions[-1], levels=50, cmap='inferno')
-    plt.colorbar(label="Flux Neutronique")
-    plt.title("Carte de chaleur : Flux Neutronique Final")
-    plt.axis('equal')
+    # 6. Visualisation du résultat final (Animation du transitoire)
+    print("Génération de l'animation...")
+    from matplotlib.animation import FuncAnimation
+    
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.set_aspect('equal')
+    ax.axis('off') # On enlève les axes pour un rendu plus esthétique (mode sombre)
+    fig.patch.set_facecolor('#1e1e1e') # Fond gris foncé style VS Code
+    
+    # On utilise tripcolor avec shading='gouraud' pour un lissage parfait, c'est bien plus beau que tricontourf
+    # On utilise la palette 'magma' ou 'plasma' qui ont de très beaux dégradés
+    mesh_plot = ax.tripcolor(mesh.points[:,0], mesh.points[:,1], mesh.cells_dict["triangle"], 
+                             solutions[0], shading='gouraud', cmap='magma')
+    
+    # Configuration de la barre de couleur
+    cbar = fig.colorbar(mesh_plot, ax=ax, shrink=0.8)
+    cbar.set_label("Flux Neutronique", color='white')
+    cbar.ax.yaxis.set_tick_params(color='white')
+    plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
+    
+    title = ax.set_title("Temps : 0.0 s", color='white', fontsize=14)
+
+    def animate(i):
+        # 1. On met à jour les données de flux pour l'image courante
+        mesh_plot.set_array(solutions[i])
+        
+        # 2. TRÈS IMPORTANT : On ajuste dynamiquement l'échelle de couleurs.
+        # Au fur et à mesure que les neutrons diffusent, le pic maximum diminue.
+        # Si on ne fait pas ça, l'image deviendrait de plus en plus noire.
+        vmax_current = np.max(solutions[i])
+        if vmax_current < 1e-5: 
+            vmax_current = 1e-5 # Sécurité pour éviter la division par zéro
+        mesh_plot.set_clim(vmin=0, vmax=vmax_current)
+        
+        # 3. Mise à jour du chrono
+        title.set_text(f"Temps : {times[i]:.5f} s")
+        return mesh_plot, title
+
+    # Lancement de l'animation (interval=50 ms entre chaque image)
+    ani = FuncAnimation(fig, animate, frames=len(solutions), interval=50, blit=False)
+    
     plt.tight_layout()
     plt.show()
     
