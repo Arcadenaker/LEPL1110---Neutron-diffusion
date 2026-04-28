@@ -1,0 +1,36 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.swp
+
+# --- Gmsh & Maillage ---
+# On ignore les fichiers de maillage volumineux
+*.msh
+*.pos
+*.opt
+# Sauf si vous voulez garder un maillage de référence précis (optionnel)
+# !output/meshes/reference.msh
+
+# --- Sorties du Projet (Simulation) ---
+# Dossiers de résultats décrits dans votre README
+output/meshes/
+output/plots/
+output/animations/
+
+# Fichiers de données temporaires ou volumineux
+*.npy
+*.npz
+*.csv
+*.txt
+
+# --- Système ---
+.DS_Store
+Thumbs.db
