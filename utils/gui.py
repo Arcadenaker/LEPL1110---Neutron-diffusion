@@ -20,13 +20,21 @@ plt.style.use("dark_background")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from physics.geometry import ReactorGeometry, ReactorMeshGenerator
 
+# Import de la base de données des matériaux
+try:
+    from physics.materials import MATERIAL_DB
+except ImportError:
+    # Fallback au cas où le fichier serait à la racine ou dans un autre module
+    from physics.materials import MATERIAL_DB
+
 
 class ReactorGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Générateur de Géométrie - Cœur de Réacteur")
-        self.geometry("550x780")  # Légèrement agrandi pour le nouveau bouton
-        self.minsize(500, 750)
+        # Fenêtre agrandie pour intégrer le panneau des matériaux
+        self.geometry("550x875")
+        self.minsize(500, 850)
         self.resizable(True, True)
 
         # Raccourcis Plein Écran
@@ -131,10 +139,37 @@ class ReactorGUI(tk.Tk):
         )
         style.map("Warning.TButton", background=[("active", "#bf6d11")])
 
+        # --- Style spécifique pour les Combobox ---
+        style.configure(
+            "TCombobox",
+            fieldbackground=self.ENTRY_BG,
+            foreground=self.FG_COLOR,
+            background=self.BORDER_COLOR,
+            bordercolor=self.BORDER_COLOR,
+            lightcolor=self.ENTRY_BG,
+            darkcolor=self.ENTRY_BG,
+            arrowcolor=self.FG_COLOR,
+        )
+
+        # Forcer les couleurs pour l'état 'readonly'
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", self.ENTRY_BG)],
+            foreground=[("readonly", self.FG_COLOR)],
+            selectbackground=[("readonly", self.ACCENT_BLUE)],
+            selectforeground=[("readonly", "white")],
+        )
+
+        # Correction de la liste déroulante (Listbox) générée par Tkinter de base
+        self.option_add("*TCombobox*Listbox.background", self.ENTRY_BG)
+        self.option_add("*TCombobox*Listbox.foreground", self.FG_COLOR)
+        self.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT_BLUE)
+        self.option_add("*TCombobox*Listbox.selectForeground", "white")
+        self.option_add("*TCombobox*Listbox.font", default_font)
+
         # --- Variables Tkinter ---
         self.var_R_hex = tk.DoubleVar(value=2.0)
         self.var_R_noyau = tk.DoubleVar(value=12.0)
-        # On remplace R_reflec par l'épaisseur (ici 4.0 par défaut pour simuler l'ancien 16.0 - 12.0)
         self.var_epaisseur_reflec = tk.DoubleVar(value=4.0)
 
         self.var_pins_fuel = tk.IntVar(value=4)
@@ -142,6 +177,28 @@ class ReactorGUI(tk.Tk):
 
         self.var_cr_rings = tk.IntVar(value=1)
         self.var_cr_density = tk.DoubleVar(value=0.5)
+
+        # Variables pour les matériaux
+        available_materials = list(MATERIAL_DB.keys()) if MATERIAL_DB else []
+
+        self.var_mat_fuel = tk.StringVar(
+            value="Fuel_Uranium" if "Fuel_Uranium" in available_materials else ""
+        )
+        self.var_mat_mod = tk.StringVar(
+            value="Water_Moderator" if "Water_Moderator" in available_materials else ""
+        )
+        self.var_mat_ref = tk.StringVar(
+            value="Graphite_Moderator"
+            if "Graphite_Moderator" in available_materials
+            else ""
+        )
+        self.var_mat_cr = tk.StringVar(
+            value="Boral_ControlRod"
+            if "Boral_ControlRod" in available_materials
+            else ""
+        )
+
+        self.available_materials = available_materials
 
         self.create_widgets()
 
@@ -160,8 +217,17 @@ class ReactorGUI(tk.Tk):
         if not output_file:
             return  # L'utilisateur a annulé la sélection
 
+        # Récupération de la configuration personnalisée des matériaux
+        user_materials = {
+            "Fuel": self.var_mat_fuel.get(),
+            "Moderator": self.var_mat_mod.get(),
+            "Reflector": self.var_mat_ref.get(),
+            "ControlRods": self.var_mat_cr.get(),
+        }
+
         try:
-            run_full_simulation(output_file)
+            # Injection de la configuration dans la fonction du solveur
+            run_full_simulation(output_file, user_mapping=user_materials)
         except Exception as e:
             messagebox.showerror("Erreur de calcul", f"Le solver a échoué :\n{e}")
 
@@ -173,7 +239,6 @@ class ReactorGUI(tk.Tk):
         initial_dir = os.path.join(base_dir, "output", "meshes")
         os.makedirs(initial_dir, exist_ok=True)
 
-        # 1. Fenêtre de sélection de fichier
         mesh_file = filedialog.askopenfilename(
             title="Sélectionner un maillage à visualiser",
             initialdir=initial_dir,
@@ -181,22 +246,16 @@ class ReactorGUI(tk.Tk):
         )
 
         if not mesh_file:
-            return  # L'utilisateur a annulé
+            return
 
-        # 2. Lancement de l'interface FLTK (Native) de Gmsh
         try:
             if gmsh.isInitialized():
                 gmsh.finalize()
 
             gmsh.initialize()
             gmsh.option.setNumber("General.Terminal", 0)
-
-            # Ouverture du fichier sélectionné
             gmsh.open(mesh_file)
-
-            # Bloque le thread Python tant que la fenêtre Gmsh est ouverte
             gmsh.fltk.run()
-
             gmsh.finalize()
         except Exception as e:
             messagebox.showerror(
@@ -218,71 +277,123 @@ class ReactorGUI(tk.Tk):
 
         def create_panel(parent, text):
             frame = ttk.Frame(parent, style="TFrame")
-            frame.pack(fill="x", pady=(0, 15))
+            frame.pack(fill="x", pady=(0, 10))
             lf = ttk.LabelFrame(frame, text=text, padding=(15, 10))
             lf.pack(fill="both", expand=True)
             return lf
 
+        # --- Dimensions Globales ---
         frame_dim = create_panel(main_container, "Dimensions Globales (cm)")
         ttk.Label(
             frame_dim, text="Rayon d'un hexagone :", background=self.PANEL_BG
-        ).grid(row=0, column=0, sticky="w", pady=5)
+        ).grid(row=0, column=0, sticky="w", pady=2)
         ttk.Entry(frame_dim, textvariable=self.var_R_hex, width=12).grid(
-            row=0, column=1, sticky="e", pady=5
+            row=0, column=1, sticky="e", pady=2
         )
 
         ttk.Label(
             frame_dim, text="Rayon limite du cœur :", background=self.PANEL_BG
-        ).grid(row=1, column=0, sticky="w", pady=5)
+        ).grid(row=1, column=0, sticky="w", pady=2)
         ttk.Entry(frame_dim, textvariable=self.var_R_noyau, width=12).grid(
-            row=1, column=1, sticky="e", pady=5
+            row=1, column=1, sticky="e", pady=2
         )
 
-        # Remplacement du label ici pour indiquer l'épaisseur
         ttk.Label(
             frame_dim, text="Épaisseur réflecteur :", background=self.PANEL_BG
-        ).grid(row=2, column=0, sticky="w", pady=5)
+        ).grid(row=2, column=0, sticky="w", pady=2)
         ttk.Entry(frame_dim, textvariable=self.var_epaisseur_reflec, width=12).grid(
-            row=2, column=1, sticky="e", pady=5
+            row=2, column=1, sticky="e", pady=2
         )
         frame_dim.grid_columnconfigure(0, weight=1)
 
+        # --- Sélection des Matériaux ---
+        frame_materials = create_panel(main_container, "Sélection des Matériaux")
+
+        ttk.Label(frame_materials, text="Combustible :", background=self.PANEL_BG).grid(
+            row=0, column=0, sticky="w", pady=2
+        )
+        ttk.Combobox(
+            frame_materials,
+            textvariable=self.var_mat_fuel,
+            values=self.available_materials,
+            state="readonly",
+            width=25,
+        ).grid(row=0, column=1, sticky="e", pady=2)
+
+        ttk.Label(
+            frame_materials, text="Modérateur (Cœur) :", background=self.PANEL_BG
+        ).grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Combobox(
+            frame_materials,
+            textvariable=self.var_mat_mod,
+            values=self.available_materials,
+            state="readonly",
+            width=25,
+        ).grid(row=1, column=1, sticky="e", pady=2)
+
+        ttk.Label(frame_materials, text="Réflecteur :", background=self.PANEL_BG).grid(
+            row=2, column=0, sticky="w", pady=2
+        )
+        ttk.Combobox(
+            frame_materials,
+            textvariable=self.var_mat_ref,
+            values=self.available_materials,
+            state="readonly",
+            width=25,
+        ).grid(row=2, column=1, sticky="e", pady=2)
+
+        ttk.Label(
+            frame_materials, text="Barres de contrôle :", background=self.PANEL_BG
+        ).grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Combobox(
+            frame_materials,
+            textvariable=self.var_mat_cr,
+            values=self.available_materials,
+            state="readonly",
+            width=25,
+        ).grid(row=3, column=1, sticky="e", pady=2)
+
+        frame_materials.grid_columnconfigure(0, weight=1)
+
+        # --- Structure Interne ---
         frame_pins = create_panel(
             main_container, "Structure Interne (Couronnes de crayons)"
         )
         ttk.Label(
             frame_pins, text="Combustible (FUEL) :", background=self.PANEL_BG
-        ).grid(row=0, column=0, sticky="w", pady=5)
+        ).grid(row=0, column=0, sticky="w", pady=2)
         ttk.Spinbox(
             frame_pins, from_=1, to=10, textvariable=self.var_pins_fuel, width=10
-        ).grid(row=0, column=1, sticky="e", pady=5)
+        ).grid(row=0, column=1, sticky="e", pady=2)
 
         ttk.Label(
             frame_pins, text="Barre de contrôle (CR) :", background=self.PANEL_BG
-        ).grid(row=1, column=0, sticky="w", pady=5)
+        ).grid(row=1, column=0, sticky="w", pady=2)
         ttk.Spinbox(
             frame_pins, from_=1, to=10, textvariable=self.var_pins_cr, width=10
-        ).grid(row=1, column=1, sticky="e", pady=5)
+        ).grid(row=1, column=1, sticky="e", pady=2)
         frame_pins.grid_columnconfigure(0, weight=1)
 
+        # --- Répartition CR ---
         frame_cr = create_panel(main_container, "Répartition Automatique des CR")
         ttk.Label(
             frame_cr, text="Nombre d'anneaux CR :", background=self.PANEL_BG
-        ).grid(row=0, column=0, sticky="w", pady=5)
+        ).grid(row=0, column=0, sticky="w", pady=2)
         ttk.Spinbox(
             frame_cr, from_=0, to=5, textvariable=self.var_cr_rings, width=10
-        ).grid(row=0, column=1, sticky="e", pady=5)
+        ).grid(row=0, column=1, sticky="e", pady=2)
 
         ttk.Label(
             frame_cr,
             text="Densité dans l'anneau (0.0 - 1.0) :",
             background=self.PANEL_BG,
-        ).grid(row=1, column=0, sticky="w", pady=5)
+        ).grid(row=1, column=0, sticky="w", pady=2)
         ttk.Entry(frame_cr, textvariable=self.var_cr_density, width=12).grid(
-            row=1, column=1, sticky="e", pady=5
+            row=1, column=1, sticky="e", pady=2
         )
         frame_cr.grid_columnconfigure(0, weight=1)
 
+        # --- Boutons d'Action ---
         frame_actions = ttk.Frame(main_container)
         frame_actions.pack(fill="both", side="bottom", pady=5, expand=True)
 
@@ -344,7 +455,6 @@ class ReactorGUI(tk.Tk):
                 "R_hex": self.var_R_hex.get(),
                 "R_noyau": r_n,
                 "epaisseur_reflec": epaisseur,
-                # On calcule le Rayon total ici pour que la physique/géométrie ne crashe pas
                 "R_reflec": r_n + epaisseur,
                 "pins_fuel": self.var_pins_fuel.get(),
                 "pins_cr": self.var_pins_cr.get(),
@@ -358,7 +468,6 @@ class ReactorGUI(tk.Tk):
             return None
 
     def _check_reflector_logic(self, p):
-        # La vérification change : l'épaisseur doit juste être positive.
         if p["epaisseur_reflec"] <= 0:
             messagebox.showwarning(
                 "Incohérence",
@@ -367,9 +476,6 @@ class ReactorGUI(tk.Tk):
             return False
         return True
 
-    # ---------------------------------------------------------
-    # MÉTHODES STANDARD
-    # ---------------------------------------------------------
     def action_preview(self):
         p = self.get_current_params()
         if not p or not self._check_reflector_logic(p):
@@ -489,16 +595,12 @@ class ReactorGUI(tk.Tk):
         output_dir = os.path.join(base_dir, "output", "meshes")
         os.makedirs(output_dir, exist_ok=True)
 
-        # Génération d'un nom de fichier unique avec horodatage
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"reactor_Rn{p['R_noyau']}_Rhex{p['R_hex']}_{timestamp}.msh"
         output_file = os.path.join(output_dir, filename)
 
         self._run_gmsh(geom, p, output_file, show_popup=True)
 
-    # ---------------------------------------------------------
-    # SÉLECTION MANUELLE
-    # ---------------------------------------------------------
     def action_manual_selection(self):
         p = self.get_current_params()
         if not p or not self._check_reflector_logic(p):
@@ -533,7 +635,6 @@ class ReactorGUI(tk.Tk):
         )
         lbl_info.pack(pady=15)
 
-        # Utilisation de Figure (Orienté Objet) pour que Pyplot ignore ce canvas
         fig = Figure(figsize=(6, 6))
         fig.patch.set_facecolor(self.BG_COLOR)
         ax = fig.add_subplot(111)
@@ -628,7 +729,6 @@ class ReactorGUI(tk.Tk):
             output_dir = os.path.join(base_dir, "output", "meshes")
             os.makedirs(output_dir, exist_ok=True)
 
-            # Génération d'un nom de fichier unique pour la sélection manuelle
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = (
                 f"reactor_manual_Rn{p['R_noyau']}_Rhex{p['R_hex']}_{timestamp}.msh"
@@ -663,9 +763,6 @@ class ReactorGUI(tk.Tk):
             else:
                 print(f"Erreur silencieuse Gmsh : {e}")
 
-    # ---------------------------------------------------------
-    # ÉTUDE PARAMÉTRIQUE
-    # ---------------------------------------------------------
     def action_parametric_setup(self):
         p_base = self.get_current_params()
         if not p_base:
@@ -677,11 +774,10 @@ class ReactorGUI(tk.Tk):
         top.minsize(800, 450)
         top.configure(bg=self.BG_COLOR)
 
-        # --- FIX 1: Gérer la fermeture propre ---
         top.is_running = True
 
         def on_closing():
-            top.is_running = False  # Envoie le signal d'arrêt au thread
+            top.is_running = False
             top.destroy()
 
         top.protocol("WM_DELETE_WINDOW", on_closing)
@@ -695,7 +791,6 @@ class ReactorGUI(tk.Tk):
         var_rmin = tk.DoubleVar(value=10.0)
         var_rmax = tk.DoubleVar(value=30.0)
         var_rstep = tk.DoubleVar(value=2.0)
-        # On récupère l'épaisseur choisie sur la page principale comme valeur par défaut
         var_epaisseur = tk.DoubleVar(value=p_base.get("epaisseur_reflec", 5.0))
 
         frame_inputs = ttk.LabelFrame(
@@ -748,7 +843,6 @@ class ReactorGUI(tk.Tk):
         )
         lbl_status.pack(pady=5)
 
-        # Utilisation de Figure (Orienté Objet) pour le widget paramétrique
         fig = Figure(figsize=(5, 5))
         fig.patch.set_facecolor(self.BG_COLOR)
         ax = fig.add_subplot(111)
@@ -760,8 +854,6 @@ class ReactorGUI(tk.Tk):
         canvas = FigureCanvasTkAgg(fig, master=frame_right)
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        # --- FIX 2: Empêcher le Garbage Collector de crasher Tkinter ---
-        # On attache les variables à la fenêtre principale pour qu'elles survivent au thread
         top.safe_refs = [
             var_rmin,
             var_rmax,
@@ -840,7 +932,6 @@ class ReactorGUI(tk.Tk):
         generated_count = 0
 
         for i, r_n in enumerate(r_vals):
-            # --- FIX 3: Interruption d'urgence si on ferme la fenêtre ---
             if not getattr(top_window, "is_running", False):
                 print("Thread paramétrique interrompu (Fenêtre fermée).")
                 return
@@ -904,7 +995,6 @@ class ReactorGUI(tk.Tk):
         self.after(0, self._finish_parametric, top_window, generated_count, output_dir)
 
     def _update_live_plot(self, ax, canvas, p, geom, centers, tags, top_window):
-        # Sécurité pour éviter les crash X11 (BadWindow)
         try:
             if not top_window.winfo_exists() or not getattr(
                 top_window, "is_running", False
