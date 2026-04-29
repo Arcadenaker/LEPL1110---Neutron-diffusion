@@ -7,12 +7,19 @@ from core.time_integration import TimeIntegrator
 from core.assembly import assemble_mass_or_reaction, assemble_stiffness
 from physics.materials import get_material_properties
 
+# --- IMPORT DU LOGGER ---
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+# ------------------------
+
 
 def extract_p1_fem_data(mesh):
     """
     Construit le dictionnaire de traduction entre le Triangle de Référence Parfait
     et les Vrais Triangles déformés du maillage.
     """
+    logger.debug("Extraction des données P1 FEM depuis le maillage...")
     triangles = mesh.cells_dict["triangle"]
     ne = len(triangles)
     points = mesh.points
@@ -42,28 +49,45 @@ def extract_p1_fem_data(mesh):
             jacobians[e, g] = J
             dets[e, g] = det_J
 
+    logger.debug(f"Extraction terminée pour {ne} éléments triangulaires.")
     return triangles, dets, w, N, jacobians, gradN_ref
 
 
-def run_full_simulation(mesh_path, user_mapping=None):
+def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=None):
     """Lit le maillage, résout l'équation et affiche le résultat."""
+    logger.info(f"Démarrage de run_full_simulation sur : {mesh_path}")
     print(f"Chargement du maillage : {mesh_path}")
-    mesh = meshio.read(mesh_path)
+
+    try:
+        mesh = meshio.read(mesh_path)
+    except Exception as e:
+        logger.error(
+            f"Erreur lors de la lecture du maillage {mesh_path} : {e}", exc_info=True
+        )
+        raise
+
     nn = len(mesh.points)
+    logger.debug(f"Maillage chargé. Nombre de nœuds : {nn}")
 
     # 1. Extraction des données géométriques et tags
     # On identifie les groupes physiques pour savoir où est le Fuel et les Barres
     # Note: On utilise extract_p1_fem_data défini plus haut dans ce fichier
     conn, det, w, N, jacobians, gradN_ref = extract_p1_fem_data(mesh)
 
-    phi_0 = np.ones(nn) * 10.0 
+    phi_0 = np.ones(nn) * 10.0
     puissance_initiale = np.sum(phi_0)
+    logger.debug(
+        f"Flux initial défini. Puissance initiale (intégrale) = {puissance_initiale}"
+    )
 
     # --- 2. Définition du Scénario (Basé sur un pourcentage) ---
-    POURCENTAGE_CIBLE = 70.0 # Exemple : 70%
-    
+    POURCENTAGE_CIBLE = 70.0  # Exemple : 70%
+
     # Calcul automatique de la cible absolue
     PUISSANCE_CIBLE = puissance_initiale * (POURCENTAGE_CIBLE / 100.0)
+    logger.info(
+        f"Scénario PID: Cible = {POURCENTAGE_CIBLE}% -> Puissance absolue cible = {PUISSANCE_CIBLE}"
+    )
 
     # Mémoires du PID
     erreur_precedente = 0.0
@@ -113,6 +137,7 @@ def run_full_simulation(mesh_path, user_mapping=None):
     # 3. Pré-assemblage des matrices fixes
     # M (Masse) et K (Diffusion/Fuites) ne changent jamais
     print("Assemblage des structures fixes...")
+    logger.info("Début de l'assemblage des matrices fixes...")
     # On transmet ici le user_mapping à la fonction d'extraction
     c_D, c_Sigma_a, c_nuSigma_f, c_inv_v = get_material_properties(
         mesh, conn, rod_insertion=1.0, user_mapping=user_mapping
@@ -126,9 +151,11 @@ def run_full_simulation(mesh_path, user_mapping=None):
     # Matrice R initiale (pourra être mise à jour par l'intégrateur)
     c_R = c_nuSigma_f - c_Sigma_a
     R_init = assemble_mass_or_reaction(nn, len(conn), 3, len(w), conn, det, w, N, c_R)
+    logger.info("Assemblage des matrices M, K et R_init terminé.")
 
     # 4. Lancement de la Simulation CINÉTIQUE
     print("Démarrage du pilotage dynamique...")
+    logger.info("Démarrage de l'intégration temporelle dynamique...")
 
     noeuds_bords = get_dirichlet_nodes(mesh, ["OuterBoundary"])
     integrateur = TimeIntegrator(M, K, R_init, noeuds_bords, theta=1.0)
@@ -138,21 +165,52 @@ def run_full_simulation(mesh_path, user_mapping=None):
 
     # [LOGIC] On passe toutes les fonctions nécessaires à l'intégrateur
     # pour qu'il puisse recalculer la physique en boucle.
-    times, solutions, final_pos = integrateur.integrate(
-        phi_0,
-        t_span=(0.0, 0.05),
-        n_steps=100,
-        mesh=mesh,
-        elem_tags=conn,
-        det=det,  # <-- NOUVEAU
-        w=w,  # <-- NOUVEAU
-        N=N,  # <-- NOUVEAU
-        get_props_func=get_material_properties,
-        pilot_callback=pilote_automatique_intelligent,
-    )
+    try:
+        times, solutions, final_pos = integrateur.integrate(
+            phi_0,
+            t_span=(0.0, 0.05),
+            n_steps=100,
+            mesh=mesh,
+            elem_tags=conn,
+            det=det,  # <-- NOUVEAU
+            w=w,  # <-- NOUVEAU
+            N=N,  # <-- NOUVEAU
+            get_props_func=get_material_properties,
+            pilot_callback=pilote_automatique_intelligent,
+            user_mapping=user_mapping,  # <-- Sécurité: on passe le mapping à l'intégrateur s'il doit recalculer
+        )
+        logger.info("Intégration temporelle terminée avec succès.")
+    except Exception as e:
+        logger.error(
+            f"Erreur critique lors de l'intégration temporelle : {e}", exc_info=True
+        )
+        raise
+
+    # --- 5. COMPORTEMENT HEADLESS (BATCH ET ÉTUDE PARAMÉTRIQUE) ---
+    if headless:
+        logger.info(
+            "Mode Headless détecté. Calcul de la puissance et sauvegarde CSV..."
+        )
+        puissance_history = [np.sum(sol) for sol in solutions]
+
+        if save_csv:
+            try:
+                data = np.column_stack((times, puissance_history))
+                np.savetxt(
+                    save_csv, data, delimiter=",", header="Time,Power", comments=""
+                )
+                logger.info(f"Fichier de résultats CSV sauvegardé : {save_csv}")
+            except Exception as e:
+                logger.error(
+                    f"Échec de l'écriture du fichier CSV {save_csv} : {e}",
+                    exc_info=True,
+                )
+
+        return times, puissance_history
 
     # 6. Visualisation du résultat final (Animation du transitoire)
     print("Génération de l'animation...")
+    logger.info("Démarrage de la génération de l'animation Matplotlib...")
     from matplotlib.animation import FuncAnimation
 
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -201,4 +259,5 @@ def run_full_simulation(mesh_path, user_mapping=None):
     plt.tight_layout()
     plt.show()
 
+    logger.info("Fin de l'exécution de run_full_simulation.")
     return solutions[-1]

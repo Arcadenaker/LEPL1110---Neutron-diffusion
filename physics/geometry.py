@@ -20,6 +20,12 @@ import matplotlib.path as mpath
 import matplotlib.patches as mpatches
 import gmsh
 
+# --- IMPORT DU LOGGER ---
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+# ------------------------
+
 
 # ==============================================================================
 # 1. MOTEUR MATHÉMATIQUE ET TOPOLOGIQUE (NumPy vectorisé)
@@ -30,6 +36,7 @@ class ReactorGeometry:
         self.R_hex = R_hex
         self.R_n = R_n
         self._pins_cache = {}
+        logger.debug(f"Initialisation ReactorGeometry : R_n={R_n}, R_hex={R_hex}")
 
     def hex_centers(self):
         """Génère les centres des hexagones via grille vectorisée."""
@@ -207,6 +214,9 @@ class ReactorGeometry:
         """Instancie le patch vectoriel du réflecteur avec son évidement."""
         # Validation géométrique : le réflecteur doit physiquement contenir le cœur.
         if R_reflector <= self.R_n:
+            logger.error(
+                f"Incohérence géométrique: le réflecteur (R={R_reflector}) n'englobe pas le noyau (R={self.R_n})"
+            )
             raise ValueError(
                 f"Le rayon du réflecteur ({R_reflector}) doit englober le noyau."
             )
@@ -232,6 +242,9 @@ class ReactorGeometry:
             compound_path = mpath.Path.make_compound_path(outer_path, inner_path)
         else:
             # Fallback de sécurité si le périmètre interne échoue.
+            logger.warning(
+                "Échec de la récupération du périmètre interne pour le patch du réflecteur."
+            )
             compound_path = outer_path
 
         # Création et retour de l'objet graphique prêt à être tracé.
@@ -334,6 +347,7 @@ class ReactorMeshGenerator:
 
     def generate(self, output_filename="output/meshes/reactor.msh"):
         """Construit la géométrie CAD, applique la fragmentation et exporte le maillage."""
+        logger.info(f"Début de la génération du maillage : {output_filename}")
 
         # --- Gestion robuste de l'API Gmsh ---
         # Nettoyage de l'état global de Gmsh en cas d'appels successifs ou d'échec précédent.
@@ -343,9 +357,10 @@ class ReactorMeshGenerator:
 
         try:
             gmsh.initialize()
-        except ValueError:
+        except ValueError as e:
             # Contournement d'un problème connu d'interaction entre le module 'signal'
             # de Python et l'initialisation de Gmsh dans des threads secondaires.
+            logger.warning(f"Contournement initialisation Gmsh : {e}")
             pass
 
         gmsh.option.setNumber(
@@ -371,6 +386,7 @@ class ReactorMeshGenerator:
         pin_tags_fuel = []
         pin_tags_cr = []
 
+        logger.debug("Création du domaine global et des assemblages...")
         # Création du domaine global (Le réflecteur agit ici comme la matrice englobante)
         reflector_tag = occ.addDisk(0, 0, 0, R_reflec, R_reflec)
 
@@ -396,6 +412,7 @@ class ReactorMeshGenerator:
         # les hexagones pour y placer les crayons.
         # Objectif : Obtenir un maillage CONFORME (les nœuds à la frontière entre
         # le combustible et le modérateur seront partagés par les deux domaines).
+        logger.debug("Lancement de la fragmentation booléenne (opération lourde)...")
         all_hex_tuples = [(2, t) for t in hex_tags]
         all_pin_tuples = [(2, t) for t in pin_tags_fuel + pin_tags_cr]
         occ.fragment([(2, reflector_tag)], all_hex_tuples + all_pin_tuples)
@@ -404,6 +421,7 @@ class ReactorMeshGenerator:
         # 3. Assignation des Groupes Physiques (Physical Groups)
         # Nécessaire pour que le solveur puisse associer des propriétés matériaux
         # (sections efficaces) et des conditions aux limites aux éléments du maillage.
+        logger.debug("Assignation des Groupes Physiques...")
         pg_reflector, pg_moderator, pg_fuel_pins, pg_cr_pins = [], [], [], []
 
         # 3.a Identification spatiale des Surfaces (Matériaux)
@@ -517,11 +535,13 @@ class ReactorMeshGenerator:
 
         # 5. Génération et Exportation
         # Appel du moteur de maillage 2D de Gmsh (algorithmes de Delaunay/Frontal).
+        logger.info("Lancement du moteur de maillage 2D de Gmsh...")
         gmsh.model.mesh.generate(2)
 
         # Sauvegarde sur disque de manière sécurisée (création du dossier si inexistant).
         os.makedirs(os.path.dirname(output_filename), exist_ok=True)
         gmsh.write(output_filename)
+        logger.info(f"Maillage généré et sauvegardé avec succès : {output_filename}")
 
         # Libération de la mémoire allouée par l'API C++ sous-jacente.
         gmsh.finalize()

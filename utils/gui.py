@@ -10,8 +10,15 @@ import sys
 import os
 import threading
 from datetime import datetime
+import glob  # Ajout nécessaire pour l'analyse
 
 from core.solver import run_full_simulation
+
+# --- IMPORT DU LOGGER ---
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+# ------------------------
 
 # Configuration du thème sombre strict pour Matplotlib
 plt.style.use("dark_background")
@@ -31,6 +38,7 @@ except ImportError:
 class ReactorGUI(tk.Tk):
     def __init__(self):
         super().__init__()
+        logger.info("Démarrage de l'interface graphique ReactorGUI.")
         self.title("Générateur de Géométrie - Cœur de Réacteur")
         # Fenêtre agrandie pour intégrer le panneau des matériaux
         self.geometry("550x875")
@@ -217,18 +225,26 @@ class ReactorGUI(tk.Tk):
         if not output_file:
             return  # L'utilisateur a annulé la sélection
 
+        logger.info(
+            f"Fichier de maillage sélectionné pour la simulation : {output_file}"
+        )
+
         # Récupération de la configuration personnalisée des matériaux
+        # MODIFICATION STRICTEMENT NÉCESSAIRE : Ajout de la valeur par défaut pour éviter le KeyError
         user_materials = {
-            "Fuel": self.var_mat_fuel.get(),
-            "Moderator": self.var_mat_mod.get(),
-            "Reflector": self.var_mat_ref.get(),
-            "ControlRods": self.var_mat_cr.get(),
+            "Fuel": self.var_mat_fuel.get() or "Fuel_Uranium",
+            "Moderator": self.var_mat_mod.get() or "Water_Moderator",
+            "Reflector": self.var_mat_ref.get() or "Graphite_Moderator",
+            "ControlRods": self.var_mat_cr.get() or "Boral_ControlRod",
         }
 
         try:
             # Injection de la configuration dans la fonction du solveur
             run_full_simulation(output_file, user_mapping=user_materials)
         except Exception as e:
+            logger.error(
+                f"Le solver a échoué lors de l'exécution unitaire : {e}", exc_info=True
+            )
             messagebox.showerror("Erreur de calcul", f"Le solver a échoué :\n{e}")
 
     def action_view_mesh(self):
@@ -248,6 +264,7 @@ class ReactorGUI(tk.Tk):
         if not mesh_file:
             return
 
+        logger.info(f"Ouverture de Gmsh pour visualiser : {mesh_file}")
         try:
             if gmsh.isInitialized():
                 gmsh.finalize()
@@ -258,6 +275,9 @@ class ReactorGUI(tk.Tk):
             gmsh.fltk.run()
             gmsh.finalize()
         except Exception as e:
+            logger.error(
+                f"Impossible d'afficher le maillage 2D avec Gmsh : {e}", exc_info=True
+            )
             messagebox.showerror(
                 "Erreur Gmsh", f"Impossible d'afficher le maillage :\n{e}"
             )
@@ -439,12 +459,21 @@ class ReactorGUI(tk.Tk):
         btn_solve.pack(pady=(5, 0))
 
         ttk.Separator(btn_container, orient="horizontal").pack(fill="x", pady=5)
+
         ttk.Button(
             btn_container,
             text="Étude Paramétrique (Batch)",
             width=btn_width,
             command=self.action_parametric_setup,
             style="Warning.TButton",
+        ).pack(pady=(5, 0))
+
+        ttk.Button(
+            btn_container,
+            text="📈 Analyser l'Étude Paramétrique",
+            width=btn_width,
+            command=self.action_analyze_parametric,
+            style="Success.TButton",
         ).pack(pady=(5, 0))
 
     def get_current_params(self):
@@ -599,6 +628,7 @@ class ReactorGUI(tk.Tk):
         filename = f"reactor_Rn{p['R_noyau']}_Rhex{p['R_hex']}_{timestamp}.msh"
         output_file = os.path.join(output_dir, filename)
 
+        logger.info(f"Début de la génération automatique (Gmsh) : {output_file}")
         self._run_gmsh(geom, p, output_file, show_popup=True)
 
     def action_manual_selection(self):
@@ -735,6 +765,7 @@ class ReactorGUI(tk.Tk):
             )
             output_file = os.path.join(output_dir, filename)
 
+            logger.info(f"Début de la génération manuelle (Gmsh) : {output_file}")
             self._run_gmsh(geom, p, output_file, show_popup=True)
 
         ttk.Button(
@@ -756,6 +787,7 @@ class ReactorGUI(tk.Tk):
                     "Maillage Terminé", f"Sauvegardé dans :\n{output_file}"
                 )
         except Exception as e:
+            logger.error(f"Erreur Gmsh lors du maillage : {e}", exc_info=True)
             if show_popup:
                 messagebox.showerror(
                     "Erreur Gmsh", f"Erreur lors du maillage :\n\n{str(e)}"
@@ -869,10 +901,22 @@ class ReactorGUI(tk.Tk):
             r_min, r_max, r_step = var_rmin.get(), var_rmax.get(), var_rstep.get()
             epaisseur = var_epaisseur.get()
 
+            # --- Capture des matériaux sélectionnés pour le solver en batch ---
+            # MODIFICATION STRICTEMENT NÉCESSAIRE : Ajout de la valeur par défaut pour éviter le KeyError
+            user_materials = {
+                "Fuel": self.var_mat_fuel.get() or "Fuel_Uranium",
+                "Moderator": self.var_mat_mod.get() or "Water_Moderator",
+                "Reflector": self.var_mat_ref.get() or "Graphite_Moderator",
+                "ControlRods": self.var_mat_cr.get() or "Boral_ControlRod",
+            }
+
             if r_min >= r_max or r_step <= 0:
                 messagebox.showerror("Erreur", "Paramètres invalides.", parent=top)
                 return
 
+            logger.info(
+                f"Démarrage de l'étude paramétrique : R_n de {r_min} à {r_max} par pas de {r_step}"
+            )
             btn_start.state(["disabled"])
             lbl_status.config(text="Initialisation...")
 
@@ -888,6 +932,7 @@ class ReactorGUI(tk.Tk):
                     r_step,
                     epaisseur,
                     p_base,
+                    user_materials,  # Passage du mapping au thread
                     top,
                     progress_var,
                     lbl_status,
@@ -913,6 +958,7 @@ class ReactorGUI(tk.Tk):
         r_step,
         epaisseur,
         p_base,
+        user_materials,
         top_window,
         progress_var,
         lbl_status,
@@ -926,6 +972,8 @@ class ReactorGUI(tk.Tk):
         )
         os.makedirs(output_dir, exist_ok=True)
 
+        logger.info(f"Création du dossier de l'étude paramétrique : {output_dir}")
+
         r_vals = np.arange(r_min, r_max + 1e-9, r_step)
         total_steps = len(r_vals)
         seen_assemblies = set()
@@ -933,9 +981,11 @@ class ReactorGUI(tk.Tk):
 
         for i, r_n in enumerate(r_vals):
             if not getattr(top_window, "is_running", False):
+                logger.warning("Thread paramétrique interrompu (Fenêtre fermée).")
                 print("Thread paramétrique interrompu (Fenêtre fermée).")
                 return
 
+            logger.debug(f"Traitement du rayon R_n = {r_n}...")
             geom = ReactorGeometry(R_n=r_n, R_hex=p_base["R_hex"])
             centers, tags, _ = geom.get_tagged_assemblies(
                 n_cr_rings=p_base["cr_rings"], cr_density=p_base["cr_density"]
@@ -978,9 +1028,10 @@ class ReactorGUI(tk.Tk):
                 output_dir, f"{prefix}_mesh_N{n_assemblies}_Rn{r_n:.1f}.msh"
             )
 
+            # Génération du maillage
             self._run_gmsh(geom, p_current, filename, show_popup=False)
-            generated_count += 1
 
+            # Exécution de la simulation en mode headless et sauvegarde CSV
             self.after(
                 0,
                 self._update_ui_progress,
@@ -988,11 +1039,161 @@ class ReactorGUI(tk.Tk):
                 lbl_status,
                 i + 1,
                 total_steps,
-                f"Généré N={n_assemblies}",
+                f"Simulation Rn={r_n}...",
                 top_window,
             )
 
+            csv_filename = filename.replace(".msh", "_results.csv")
+            try:
+                run_full_simulation(
+                    filename,
+                    user_mapping=user_materials,
+                    headless=True,
+                    save_csv=csv_filename,
+                )
+            except Exception as e:
+                logger.error(
+                    f"!!! ERREUR LORS DE LA SIMULATION (Rn={r_n}) !!!\nDétails : {e}",
+                    exc_info=True,
+                )
+                print(f"Erreur simulation Rn={r_n}: {e}")
+
+            generated_count += 1
+
+        logger.info("Étude paramétrique terminée.")
         self.after(0, self._finish_parametric, top_window, generated_count, output_dir)
+
+    def action_analyze_parametric(self):
+        """Ouvre un dossier, lit les CSV, affiche les courbes et calcule le meilleur rayon."""
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        initial_dir = os.path.join(base_dir, "output", "meshes")
+
+        study_dir = filedialog.askdirectory(
+            title="Sélectionner le dossier de l'étude", initialdir=initial_dir
+        )
+        if not study_dir:
+            return
+
+        logger.info(
+            f"Lancement de l'analyse de l'étude paramétrique sur le dossier : {study_dir}"
+        )
+
+        csv_files = glob.glob(os.path.join(study_dir, "*_results.csv"))
+
+        if not csv_files:
+            logger.warning("Aucun fichier CSV trouvé dans le dossier sélectionné.")
+            messagebox.showwarning(
+                "Dossier vide", "Aucun fichier de résultat CSV trouvé dans ce dossier."
+            )
+            return
+
+        # Puissance cible (Doit correspondre à PUISSANCE_CIBLE de solver.py)
+        P_CIBLE = 50000000000.0
+
+        best_rn = None
+        best_score = float("inf")
+        best_times = None
+        best_power = None
+
+        all_data = []
+
+        # 1. Lecture et évaluation de la stabilité
+        for f in csv_files:
+            logger.debug(f"Analyse du fichier CSV : {f}")
+            try:
+                rn_str = os.path.basename(f).split("_Rn")[1].split("_results.csv")[0]
+                rn_val = float(rn_str)
+            except Exception as e:
+                logger.warning(
+                    f"Erreur d'extraction du rayon pour le nom de fichier {f}: {e}"
+                )
+                print(f"Erreur d'extraction du rayon pour {f}: {e}")
+                rn_val = "Inconnu"
+
+            try:
+                data = np.loadtxt(f, delimiter=",", skiprows=1)
+                times = data[:, 0]
+                power = data[:, 1]
+                all_data.append((rn_val, times, power))
+
+                # Formule de Stabilité : Intégrale de l'erreur absolue sur la 2ème moitié du temps
+                demi_idx = len(power) // 2
+                erreur_absolue = np.sum(np.abs(power[demi_idx:] - P_CIBLE))
+
+                if erreur_absolue < best_score:
+                    best_score = erreur_absolue
+                    best_rn = rn_val
+                    best_times = times
+                    best_power = power
+            except Exception as e:
+                logger.error(
+                    f"Impossible de lire les données dans {f}: {e}", exc_info=True
+                )
+                print(f"Impossible de lire {f}: {e}")
+
+        if not all_data:
+            logger.error("Échec de la lecture de tous les fichiers CSV.")
+            messagebox.showwarning(
+                "Erreur de lecture", "Les fichiers CSV n'ont pas pu être lus."
+            )
+            return
+
+        logger.info(f"Analyse terminée avec succès. Meilleur rayon trouvé : {best_rn}")
+
+        # 2. Affichage Graphique
+        plt.close("Analyse de Stabilité")
+        fig, ax = plt.subplots(num="Analyse de Stabilité", figsize=(10, 6))
+        fig.patch.set_facecolor(self.BG_COLOR)
+        ax.set_facecolor(self.PANEL_BG)
+
+        ax.axhline(
+            P_CIBLE,
+            color="white",
+            linestyle="--",
+            linewidth=2,
+            label="Cible (50 GW)",
+            zorder=3,
+        )
+
+        for rn_val, times, power in all_data:
+            if rn_val == best_rn:
+                continue
+            ax.plot(times, power, color=self.FG_COLOR, alpha=0.3, linewidth=1)
+
+        # Tracé du champion
+        ax.plot(
+            best_times,
+            best_power,
+            color="#00ff00",
+            linewidth=3,
+            label=f"Meilleur (Rn={best_rn} cm)",
+            zorder=4,
+        )
+
+        ax.set_title(
+            "Stabilité du Pilotage Automatique selon le Rayon (Rn)",
+            color=self.FG_COLOR,
+            fontsize=14,
+            fontweight="bold",
+        )
+        ax.set_xlabel("Temps (s)", color=self.FG_COLOR)
+        ax.set_ylabel("Puissance Totale", color=self.FG_COLOR)
+        ax.tick_params(colors=self.FG_COLOR)
+
+        ax.grid(True, color=self.BORDER_COLOR, linestyle=":")
+        legend = ax.legend(
+            facecolor=self.ENTRY_BG,
+            edgecolor=self.BORDER_COLOR,
+            labelcolor=self.FG_COLOR,
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+        messagebox.showinfo(
+            "Résultat de l'analyse",
+            f"Le rayon offrant la meilleure stabilité pour ces matériaux est :\n\nRn = {best_rn} cm\n\n(Ce rayon minimise les oscillations autour de la cible).",
+        )
 
     def _update_live_plot(self, ax, canvas, p, geom, centers, tags, top_window):
         try:
