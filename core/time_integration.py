@@ -25,61 +25,64 @@ class TimeIntegrator:
         dt = (t_end - t_start) / n_steps
         times = np.linspace(t_start, t_end, n_steps + 1)
         nn = self.M.shape[0]
+        ne = len(elem_tags)
         
-        # [LOGIC] Pré-calcul du masque de Dirichlet (ne change pas)
         mask = np.ones(nn, dtype=bool)
         mask[self.dirichlet_dofs] = False
         free_dofs = np.nonzero(mask)[0]
 
         solutions = [phi_0.copy()]
         phi_n = phi_0.copy()
-        
-        # [LOGIC] On initialise la mémoire du passé avec l'état initial
         phi_prev = phi_0.copy()
 
-        # On initialise l'état des barres (ex: 0.0 =  pas insérées)
+        # Initialisation de la position de départ (levées)
         current_rod_pos = 0.0 
-
+        
+        # --- VARIABLES DE CACHE (LAZY COMPUTING) ---
+        last_computed_pos = -1.0  # Mis à -1 pour forcer le calcul à la boucle 1
+        solve_lu = None           # Stockera l'objet factorisé
+        B_mat = None              # Stockera la matrice B
+        
         for i in range(1, n_steps + 1):
-            # --- ÉTAPE DYNAMIQUE 1 : PILOTAGE ---
-            # [LOGIC] On demande au "pilote" de bouger les barres selon le flux actuel
+            
             if pilot_callback is not None:
                 current_rod_pos = pilot_callback(phi_n, phi_prev, current_rod_pos)
 
-            # --- ÉTAPE DYNAMIQUE 2 : MISE À JOUR PHYSIQUE ---
-            # [MATH] On recalcule les propriétés (Sigma_a) avec la nouvelle position
-            _, c_Sigma_a, c_nuSigma_f, _ = get_props_func(mesh, elem_tags, rod_insertion=current_rod_pos)
-            c_R = c_nuSigma_f - c_Sigma_a
-            
-            # --- ÉTAPE DYNAMIQUE 3 : RE-ASSEMBLAGE ---
-            ne = len(elem_tags)
-            self.R = assemble_mass_or_reaction(nn, ne, 3, len(w), elem_tags, det, w, N, c_R)
-            
-            # --- ÉTAPE DYNAMIQUE 4 : RÉSOLUTION ---
-            # [MATH] L'opérateur L = R - K change, donc A et B changent aussi !
-            L = self.R - self.K
-            A = (self.M - self.theta * dt * L).tocsc() 
-            B = (self.M + (1.0 - self.theta) * dt * L).tocsr()
-            
-            # [LOGIC] CRITIQUE : On doit RE-FACTORISER la matrice à chaque pas de temps
-            # C'est l'étape coûteuse, mais nécessaire pour le réalisme.
-            A_FF = A[free_dofs, :][:, free_dofs]
-            solve_lu = splu(A_FF)
-            
-            # Calcul du second membre (RHS)
-            b_full = B.dot(phi_n)
-            # (On suppose dir_vals = 0 pour simplifier)
+            # Si la barre a bougé de plus de 0.1%, on recalcule la physique
+            if abs(current_rod_pos - last_computed_pos) > 0.001:
+                
+                _, c_Sigma_a, c_nuSigma_f, _ = get_props_func(mesh, elem_tags, rod_insertion=current_rod_pos)
+                c_R = c_nuSigma_f - c_Sigma_a
+                
+                # Assemblage multi-threadé ultra rapide
+                self.R = assemble_mass_or_reaction(nn, ne, 3, len(w), elem_tags, det, w, N, c_R)
+                
+                L = self.R - self.K
+                A = (self.M - self.theta * dt * L).tocsc() 
+                B_mat = (self.M + (1.0 - self.theta) * dt * L).tocsr()
+                
+                # C'est l'étape la plus lourde de tout le programme.
+                # On ne la lance QUE quand c'est indispensable.
+                A_FF = A[free_dofs, :][:, free_dofs]
+                solve_lu = splu(A_FF)
+                
+                # On met à jour la mémoire du cache
+                last_computed_pos = current_rod_pos
+
+            # --- RÉSOLUTION ÉCLAIR ---
+            # On utilise le solveur LU et la matrice B qui sont en cache
+            b_full = B_mat.dot(phi_n)
             rhs_reduced = b_full[free_dofs]
             
-            # Résolution du système pour ce pas de temps précis
+            # Résolution en une fraction de seconde grâce à splu précalculé
             phi_free_np1 = solve_lu.solve(rhs_reduced)
             
-            # Reconstruction et stockage
+            # Reconstruction 
             phi_np1 = np.zeros(nn)
             phi_np1[free_dofs] = phi_free_np1
             
-            # --- NOUVEAU : Plancher physique (Bruit de fond neutronique) ---
-            phi_np1 = np.maximum(phi_np1, 1e-10)
+            # Bruit de fond spontané (Masse critique)
+            phi_np1 = np.maximum(phi_np1, 1e-10) 
             
             solutions.append(phi_np1.copy())
             

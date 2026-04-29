@@ -56,29 +56,34 @@ def run_full_simulation(mesh_path):
     conn, det, w, N, jacobians, gradN_ref = extract_p1_fem_data(mesh)
     
     # 2. Définition du Scénario et du Pilote
-    # [LOGIC] On définit une puissance cible (somme du flux neutronique)
-    PUISSANCE_CIBLE = 50000.0 
+    PUISSANCE_CIBLE = 5000.0 
     
+    # On déclare la "mémoire" juste avant la fonction
+    erreur_precedente = 0.0
+
     def pilote_automatique_intelligent(phi_actuel, phi_precedent, position_barres):
-        """
-        Pilote Proportionnel : Ajuste les barres en fonction de la distance à la cible.
-        """
-        puissance_t = np.sum(phi_actuel)
+        # On dit à Python d'utiliser la variable définie juste au-dessus
+        nonlocal erreur_precedente 
         
-        # 1. Calcul de l'erreur relative (-1.0 = vide absolu, 0.0 = parfait, >0 = surpuissance)
+        puissance_t = np.sum(phi_actuel)
         erreur = (puissance_t - PUISSANCE_CIBLE) / PUISSANCE_CIBLE
         
-        # 2. Gain proportionnel (la "nervosité" du pilote)
-        Kp = 0.15 
+        # 1. Gain proportionnel (L'accélérateur / Le ressort)
+        Kp = 0.08 
+        # 2. Gain Dérivé (Le frein / L'amortisseur)
+        Kd = 0.30 
         
-        # 3. Calcul du mouvement demandé
-        # Si erreur est positive (trop de puissance), on veut insérer (delta positif)
-        delta_pos = Kp * erreur 
+        # Calcul de la vitesse à laquelle l'erreur change
+        derivee_erreur = erreur - erreur_precedente
         
-        # 4. Sécurité : On bride la vitesse physique des mécanismes (max 2% de course par pas de temps)
-        delta_pos = np.clip(delta_pos, -0.02, 0.02)
+        # On met à jour la mémoire pour le prochain pas de temps
+        erreur_precedente = erreur
         
-        # 5. Application et butées physiques des barres (entre 0.0 et 1.0)
+        # Le mouvement est la somme de l'accélérateur et du frein
+        delta_pos = Kp * erreur + Kd * derivee_erreur 
+        
+        # Sécurités physiques
+        delta_pos = np.clip(delta_pos, -0.05, 0.05)
         nouvelle_pos = np.clip(position_barres + delta_pos, 0.0, 1.0)
                 
         return nouvelle_pos
