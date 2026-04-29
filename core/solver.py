@@ -56,34 +56,47 @@ def run_full_simulation(mesh_path):
     conn, det, w, N, jacobians, gradN_ref = extract_p1_fem_data(mesh)
     
     # 2. Définition du Scénario et du Pilote
-    PUISSANCE_CIBLE = 5000.0 
+    PUISSANCE_CIBLE = 50000000000.0 
     
-    # On déclare la "mémoire" juste avant la fonction
+    # Mémoires du PID
     erreur_precedente = 0.0
+    erreur_integrale = 0.0
 
     def pilote_automatique_intelligent(phi_actuel, phi_precedent, position_barres):
-        # On dit à Python d'utiliser la variable définie juste au-dessus
-        nonlocal erreur_precedente 
+        nonlocal erreur_precedente, erreur_integrale 
         
         puissance_t = np.sum(phi_actuel)
-        erreur = (puissance_t - PUISSANCE_CIBLE) / PUISSANCE_CIBLE
         
-        # 1. Gain proportionnel (L'accélérateur / Le ressort)
-        Kp = 0.08 
-        # 2. Gain Dérivé (Le frein / L'amortisseur)
-        Kd = 0.30 
+        # Sécurité : On empêche la puissance de tomber au zéro mathématique absolu
+        p_safe = max(puissance_t, 1e-5)
         
-        # Calcul de la vitesse à laquelle l'erreur change
+        # 1. LE SECRET : L'Erreur Logarithmique !
+        # log(P_actuel / P_cible). 
+        # Si P_actuel < P_cible, l'erreur est négative -> Les barres vont se lever.
+        erreur = np.log(p_safe / PUISSANCE_CIBLE)
+        
+        # 2. Les Gains du PID (Ajustés pour la dynamique logarithmique)
+        Kp = 0.03   # Action immédiate
+        Ki = 0.002  # Chercheur de point critique (très faible pour éviter l'emballement)
+        Kd = 0.15   # Amortisseur prédictif
+        
+        # 3. Calcul de la dérivée et de l'intégrale
         derivee_erreur = erreur - erreur_precedente
         
-        # On met à jour la mémoire pour le prochain pas de temps
+        # Anti-Windup : On ne cumule l'intégrale que si on est proche de la cible (à +/- un facteur e)
+        # Ça empêche le pilote de devenir "fou" si le démarrage prend du temps.
+        if abs(erreur) < 1.0:
+            erreur_integrale += erreur
+            
         erreur_precedente = erreur
         
-        # Le mouvement est la somme de l'accélérateur et du frein
-        delta_pos = Kp * erreur + Kd * derivee_erreur 
+        # 4. Calcul du mouvement
+        delta_pos = Kp * erreur + Ki * erreur_integrale + Kd * derivee_erreur 
         
-        # Sécurités physiques
+        # 5. Sécurités physiques (Vitesse max des moteurs : 5% de la course par itération)
         delta_pos = np.clip(delta_pos, -0.05, 0.05)
+        
+        # 6. Application (0.0 = complètement levé, 1.0 = complètement inséré)
         nouvelle_pos = np.clip(position_barres + delta_pos, 0.0, 1.0)
                 
         return nouvelle_pos
