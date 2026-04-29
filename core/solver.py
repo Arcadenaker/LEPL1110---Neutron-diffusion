@@ -56,8 +56,14 @@ def run_full_simulation(mesh_path, user_mapping=None):
     # Note: On utilise extract_p1_fem_data défini plus haut dans ce fichier
     conn, det, w, N, jacobians, gradN_ref = extract_p1_fem_data(mesh)
 
-    # 2. Définition du Scénario et du Pilote
-    PUISSANCE_CIBLE = 50000000000.0
+    phi_0 = np.ones(nn) * 10.0 
+    puissance_initiale = np.sum(phi_0)
+
+    # --- 2. Définition du Scénario (Basé sur un pourcentage) ---
+    POURCENTAGE_CIBLE = 70.0 # Exemple : 70%
+    
+    # Calcul automatique de la cible absolue
+    PUISSANCE_CIBLE = puissance_initiale * (POURCENTAGE_CIBLE / 100.0)
 
     # Mémoires du PID
     erreur_precedente = 0.0
