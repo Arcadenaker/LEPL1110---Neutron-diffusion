@@ -80,13 +80,14 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
         f"Flux initial défini. Puissance initiale (intégrale) = {puissance_initiale}"
     )
 
-    # --- 2. Définition du Scénario (Basé sur un pourcentage) ---
-    POURCENTAGE_CIBLE = 70.0  # Exemple : 70%
+    # Le réacteur est à l'arrêt, il n'y a que le bruit de fond (puissance_initiale).
+    # On demande au PID de "tirer" les barres pour multiplier cette puissance par 1.5.
+    POURCENTAGE_CIBLE = 150 
 
     # Calcul automatique de la cible absolue
     PUISSANCE_CIBLE = puissance_initiale * (POURCENTAGE_CIBLE / 100.0)
     logger.info(
-        f"Scénario PID: Cible = {POURCENTAGE_CIBLE}% -> Puissance absolue cible = {PUISSANCE_CIBLE}"
+        f"Scénario PID: Démarrage visé à {POURCENTAGE_CIBLE}% -> Puissance cible = {PUISSANCE_CIBLE}"
     )
 
     # Mémoires du PID
@@ -107,11 +108,9 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
         erreur = np.log(p_safe / PUISSANCE_CIBLE)
 
         # 2. Les Gains du PID (Ajustés pour la dynamique logarithmique)
-        Kp = 0.03  # Action immédiate
-        Ki = (
-            0.002  # Chercheur de point critique (très faible pour éviter l'emballement)
-        )
-        Kd = 0.15  # Amortisseur prédictif
+        Kp = 0.01  # Action immédiate
+        Ki = (0.0005)  # Chercheur de point critique (très faible pour éviter l'emballement)
+        Kd = 0.05  # Amortisseur prédictif
 
         # 3. Calcul de la dérivée et de l'intégrale
         derivee_erreur = erreur - erreur_precedente
@@ -158,7 +157,7 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
     logger.info("Démarrage de l'intégration temporelle dynamique...")
 
     noeuds_bords = get_dirichlet_nodes(mesh, ["OuterBoundary"])
-    integrateur = TimeIntegrator(M, K, R_init, noeuds_bords, theta=1.0)
+    integrateur = TimeIntegrator(M, K, R_init, noeuds_bords)
 
     # Initialisation : flux nul partout sauf un peu de 'bruit' pour démarrer
     phi_0 = np.ones(nn) * 10.0
@@ -168,16 +167,21 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
     try:
         times, solutions, final_pos = integrateur.integrate(
             phi_0,
-            t_span=(0.0, 0.05),
-            n_steps=100,
+            t_span=(0.0, 3.0),
+            n_steps=250,
             mesh=mesh,
             elem_tags=conn,
-            det=det,  # <-- NOUVEAU
-            w=w,  # <-- NOUVEAU
-            N=N,  # <-- NOUVEAU
+            det=det,  
+            w=w,  
+            N=N,  
             get_props_func=get_material_properties,
             pilot_callback=pilote_automatique_intelligent,
-            user_mapping=user_mapping,  # <-- Sécurité: on passe le mapping à l'intégrateur s'il doit recalculer
+            user_mapping=user_mapping,  
+            
+            # Avant d'allumer la machine, on s'assure que les barres sont insérées à 85%.
+            # Ainsi, le PID devra les lever doucement pour atteindre sa cible de puissance, 
+            # évitant l'overshoot fatal des premiers instants.
+            initial_rod_pos=0.85,  
         )
         logger.info("Intégration temporelle terminée avec succès.")
     except Exception as e:

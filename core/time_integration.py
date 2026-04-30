@@ -41,6 +41,9 @@ class TimeIntegrator:
         get_props_func,
         pilot_callback=None,
         user_mapping=None,
+        # NOUVEAU : On ajoute un argument pour la position initiale des barres.
+        # Par défaut, on le met à 0.85 (Barres insérées à 85%), c'est la sécurité absolue.
+        initial_rod_pos=0.85, 
     ):
         t_start, t_end = t_span
         dt = (t_end - t_start) / n_steps
@@ -60,15 +63,16 @@ class TimeIntegrator:
         phi_n = phi_0.copy()
         phi_prev = phi_0.copy()
 
-        # Initialisation de la position de départ (levées)
-        current_rod_pos = 0.0
+        # On utilise la position sécurisée demandée en paramètre (de base 0.85) 
+        # C'est le point de départ de notre PID.
+        current_rod_pos = initial_rod_pos 
 
         # --- VARIABLES DE CACHE (LAZY COMPUTING) ---
         last_computed_pos = -1.0  # Mis à -1 pour forcer le calcul à la boucle 1
-        solve_lu = None  # Stockera l'objet factorisé
-        B_mat = None  # Stockera la matrice B
+        solve_lu = None  
+        B_mat = None  
 
-        step_log_interval = max(1, n_steps // 10)  # Pour ne pas spammer les logs
+        step_log_interval = max(1, n_steps // 10)
 
         for i in range(1, n_steps + 1):
             if i % step_log_interval == 0:
