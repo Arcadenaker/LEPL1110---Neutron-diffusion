@@ -1,5 +1,6 @@
 import numpy as np
 import meshio
+from scipy.sparse.linalg import eigsh
 import matplotlib.pyplot as plt
 
 from core.boundary_cond import get_dirichlet_nodes
@@ -53,6 +54,55 @@ def extract_p1_fem_data(mesh):
     return triangles, dets, w, N, jacobians, gradN_ref
 
 
+def precalculer_position_critique(mesh, conn, det, w, N, get_props_func, K, nn, user_mapping, noeuds_bords):
+    logger.info("Recherche du point d'équilibre initial des barres de contrôle")
+    
+    # 1. On isole les noeuds physiques
+    mask = np.ones(nn, dtype=bool)
+    mask[noeuds_bords] = False
+    free_dofs = np.nonzero(mask)[0]
+    
+    K_FF = K[free_dofs, :][:, free_dofs]
+    
+    # --- NOUVEAU : Le vecteur de test (flux plat) ---
+    phi_test = np.ones(len(free_dofs))
+    
+    pos_min = 0.0  
+    pos_max = 1.0  
+    pos_critique = 0.5
+    
+    # Vu que c'est gratuit en temps de calcul, on peut faire 10 étapes
+    # pour avoir une précision chirurgicale (à 0.001 près !)
+    for i in range(10): 
+        pos_critique = (pos_min + pos_max) / 2.0
+        
+        _, c_Sigma_a, c_nuSigma_f, _ = get_props_func(
+            mesh, conn, rod_insertion=pos_critique, user_mapping=user_mapping
+        )
+        c_R = c_nuSigma_f - c_Sigma_a
+        
+        # Assemblage hyper rapide (déjà optimisé sous Numba)
+        R = assemble_mass_or_reaction(nn, len(conn), 3, len(w), conn, det, w, N, c_R)
+        R_FF = R[free_dofs, :][:, free_dofs]
+        
+        A_FF = R_FF - K_FF
+        
+        # --- LA MAGIE MATHÉMATIQUE (0.001 seconde) ---
+        # On calcule la dérivée instantanée du flux global
+        variation_flux = A_FF.dot(phi_test)
+        bilan_neutronique = np.sum(variation_flux)
+        
+        if bilan_neutronique > 0:
+            # Réaction s'emballe, on enfonce les barres
+            pos_min = pos_critique
+        else:
+            # Réaction s'étouffe, on lève les barres
+            pos_max = pos_critique
+
+    logger.info(f"Position d'équilibre trouvée : {pos_critique:.3f}")
+    return pos_critique
+
+
 def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=None):
     """Lit le maillage, résout l'équation et affiche le résultat."""
     logger.info(f"Démarrage de run_full_simulation sur : {mesh_path}")
@@ -90,47 +140,48 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
         f"Scénario PID: Démarrage visé à {POURCENTAGE_CIBLE}% -> Puissance cible = {PUISSANCE_CIBLE}"
     )
 
-    # Mémoires du PID
-    erreur_precedente = 0.0
-    erreur_integrale = 0.0
+    # Mémoire pour le calcul de la "Période" (Vitesse exponentielle)
+    erreur_precedente = None
 
-    def pilote_automatique_intelligent(phi_actuel, phi_precedent, position_barres):
-        nonlocal erreur_precedente, erreur_integrale
+    def pilote_automatique_intelligent(phi_actuel, phi_precedent, position_barres, dt):
+        nonlocal erreur_precedente
 
         puissance_t = np.sum(phi_actuel)
-
-        # Sécurité : On empêche la puissance de tomber au zéro mathématique absolu
         p_safe = max(puissance_t, 1e-5)
-
-        # 1. LE SECRET : L'Erreur Logarithmique !
-        # log(P_actuel / P_cible).
-        # Si P_actuel < P_cible, l'erreur est négative -> Les barres vont se lever.
+        
+        # 1. L'ERREUR LOGARITHMIQUE (La seule qui marche pour un réacteur !)
+        # Si la puissance est trop HAUTE, l'erreur est POSITIVE (il faut insérer)
+        # Si la puissance est trop BASSE, l'erreur est NÉGATIVE (il faut lever)
         erreur = np.log(p_safe / PUISSANCE_CIBLE)
 
-        # 2. Les Gains du PID (Ajustés pour la dynamique logarithmique)
-        Kp = 0.01  # Action immédiate
-        Ki = (0.0005)  # Chercheur de point critique (très faible pour éviter l'emballement)
-        Kd = 0.05  # Amortisseur prédictif
+        if erreur_precedente is None:
+            erreur_precedente = erreur
 
-        # 3. Calcul de la dérivée et de l'intégrale
-        derivee_erreur = erreur - erreur_precedente
+        # 2. OMEGA (L'inverse de la Période du réacteur)
+        # C'est notre Radar d'Anticipation. Il mesure l'accélération exponentielle.
+        omega = (erreur - erreur_precedente) / dt
 
-        # Anti-Windup : On ne cumule l'intégrale que si on est proche de la cible (à +/- un facteur e)
-        # Ça empêche le pilote de devenir "fou" si le démarrage prend du temps.
-        if abs(erreur) < 1.0:
-            erreur_integrale += erreur
+        # 3. LES GAINS (L'équilibre parfait)
+        Kp = 0.15   # Le ressort : tire doucement vers la cible
+        Kd = 0.50   # L'AMORTISSEUR EXTRÊME : Tient compte de l'inertie et freine très tôt
 
-        erreur_precedente = erreur
+        # 4. CALCUL DU MOUVEMENT
+        # Comme 0.0 = levé et 1.0 = inséré, une erreur positive (trop de puissance)
+        # donne un delta_pos positif (on enfonce les barres). Le signe est naturel !
+        vitesse_demandee = (Kp * erreur) + (Kd * omega)
+        delta_pos = vitesse_demandee * dt
 
-        # 4. Calcul du mouvement
-        delta_pos = Kp * erreur + Ki * erreur_integrale + Kd * derivee_erreur
+        # 5. SÉCURITÉ MÉCANIQUE (On autorise les barres à aller à 40% par seconde 
+        # pour leur donner une chance de rattraper le flux)
+        vitesse_max = 0.40
+        delta_pos = np.clip(delta_pos, -vitesse_max * dt, vitesse_max * dt)
 
-        # 5. Sécurités physiques (Vitesse max des moteurs : 5% de la course par itération)
-        delta_pos = np.clip(delta_pos, -0.05, 0.05)
-
-        # 6. Application (0.0 = complètement levé, 1.0 = complètement inséré)
         nouvelle_pos = np.clip(position_barres + delta_pos, 0.0, 1.0)
 
+        # LE RADAR DE PRÉCISION
+        print(f"[PID] Puissance: {p_safe:.0f} | ErrLog: {erreur:+.2f} | Accélération (Omega): {omega:+.2f} | Barres: {position_barres:.3f} -> {nouvelle_pos:.3f}")
+
+        erreur_precedente = erreur
         return nouvelle_pos
 
     # 3. Pré-assemblage des matrices fixes
@@ -157,18 +208,20 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
     logger.info("Démarrage de l'intégration temporelle dynamique...")
 
     noeuds_bords = get_dirichlet_nodes(mesh, ["OuterBoundary"])
+
+    position_depart_ideale = precalculer_position_critique(
+        mesh, conn, det, w, N, get_material_properties, K, nn, user_mapping, noeuds_bords
+    )
+
     integrateur = TimeIntegrator(M, K, R_init, noeuds_bords)
 
-    # Initialisation : flux nul partout sauf un peu de 'bruit' pour démarrer
     phi_0 = np.ones(nn) * 10.0
 
-    # [LOGIC] On passe toutes les fonctions nécessaires à l'intégrateur
-    # pour qu'il puisse recalculer la physique en boucle.
     try:
         times, solutions, final_pos = integrateur.integrate(
             phi_0,
-            t_span=(0.0, 3.0),
-            n_steps=250,
+            t_span=(0.0, 15.0),
+            n_steps=150,
             mesh=mesh,
             elem_tags=conn,
             det=det,  
@@ -176,14 +229,11 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
             N=N,  
             get_props_func=get_material_properties,
             pilot_callback=pilote_automatique_intelligent,
-            user_mapping=user_mapping,  
+            user_mapping=user_mapping,
             
-            # Avant d'allumer la machine, on s'assure que les barres sont insérées à 85%.
-            # Ainsi, le PID devra les lever doucement pour atteindre sa cible de puissance, 
-            # évitant l'overshoot fatal des premiers instants.
-            initial_rod_pos=0.85,  
+            # --- ON INJECTE NOTRE DÉCOUVERTE ICI ! ---
+            initial_rod_pos=position_depart_ideale,
         )
-        logger.info("Intégration temporelle terminée avec succès.")
     except Exception as e:
         logger.error(
             f"Erreur critique lors de l'intégration temporelle : {e}", exc_info=True
@@ -239,22 +289,33 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
     cbar.ax.yaxis.set_tick_params(color="white")
     plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="white")
 
-    title = ax.set_title("Temps : 0.0 s", color="white", fontsize=14)
+
+    puissance_init = np.sum(solutions[0])
+    title = ax.set_title(f"Temps : 0.00 s  |  Puissance : {puissance_init:,.0f}", color="white", fontsize=14)
 
     def animate(i):
-        # 1. On met à jour les données de flux pour l'image courante
+        # 1. On met à jour les données de flux
         mesh_plot.set_array(solutions[i])
 
-        # 2. TRÈS IMPORTANT : On ajuste dynamiquement l'échelle de couleurs.
-        # Au fur et à mesure que les neutrons diffusent, le pic maximum diminue.
-        # Si on ne fait pas ça, l'image deviendrait de plus en plus noire.
+        # 2. Ajustement de l'échelle de couleurs
         vmax_current = np.max(solutions[i])
         if vmax_current < 1e-5:
-            vmax_current = 1e-5  # Sécurité pour éviter la division par zéro
+            vmax_current = 1e-5
         mesh_plot.set_clim(vmin=0, vmax=vmax_current)
 
-        # 3. Mise à jour du chrono
-        title.set_text(f"Temps : {times[i]:.5f} s")
+        # 3. Calcul de la puissance en temps réel pour cette image exacte
+        puissance_actuelle = np.sum(solutions[i])
+
+        # 4. Calcul du vrai temps
+        # Astuce : Si tu as appliqué mon conseil de ne sauvegarder qu'une image sur 5 
+        # pour aller plus vite, 'times[i]' serait désynchronisé. 
+        # On calcule donc le temps réel proportionnellement à l'image affichée :
+        progression = i / max(1, len(solutions) - 1)
+        temps_actuel = times[0] + progression * (times[-1] - times[0])
+
+        # 5. Mise à jour du texte
+        title.set_text(f"Temps : {temps_actuel:.2f} s  |  Puissance : {puissance_actuelle:,.0f}")
+        
         return mesh_plot, title
 
     # Lancement de l'animation (interval=50 ms entre chaque image)

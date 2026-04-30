@@ -42,8 +42,8 @@ class TimeIntegrator:
         pilot_callback=None,
         user_mapping=None,
         # NOUVEAU : On ajoute un argument pour la position initiale des barres.
-        # Par défaut, on le met à 0.85 (Barres insérées à 85%), c'est la sécurité absolue.
-        initial_rod_pos=0.85, 
+        # Par défaut, on le met à 0.60 (Barres insérées à 60%), c'est la sécurité absolue.
+        initial_rod_pos=0.45, 
     ):
         t_start, t_end = t_span
         dt = (t_end - t_start) / n_steps
@@ -79,10 +79,10 @@ class TimeIntegrator:
                 logger.debug(f"Progression de l'intégration : Étape {i}/{n_steps}")
 
             if pilot_callback is not None:
-                current_rod_pos = pilot_callback(phi_n, phi_prev, current_rod_pos)
+                current_rod_pos = pilot_callback(phi_n, phi_prev, current_rod_pos, dt)
 
             # Si la barre a bougé de plus de 0.1%, on recalcule la physique
-            if abs(current_rod_pos - last_computed_pos) > 0.001:
+            if abs(current_rod_pos - last_computed_pos) > 0.01:
                 logger.info(
                     f"Mouvement significatif des barres détecté (pos={current_rod_pos:.4f}). Re-calcul de la physique et factorisation LU..."
                 )
@@ -127,7 +127,8 @@ class TimeIntegrator:
             # Bruit de fond spontané (Masse critique)
             phi_np1 = np.maximum(phi_np1, 1e-10)
 
-            solutions.append(phi_np1.copy())
+            if i % 2 == 0 or i == n_steps:
+                solutions.append(phi_np1.copy())
 
             phi_prev = phi_n.copy()
             phi_n = phi_np1
