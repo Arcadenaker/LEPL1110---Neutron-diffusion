@@ -42,7 +42,7 @@ class Material:
         # Sigma_a tend vers 0. La division ferait tendre v vers l'infini
         # Mathématiquement, cela rendrait notre matrice de Masse singulière et le solveur LU planterait
         # On plafonne donc la vitesse virtuelle à une valeur arbitrairement élevée
-        return 1500
+        return 1e5
 
 
 # -- LA BASE DE DONNÉES NUCLÉAIRE --

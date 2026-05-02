@@ -127,71 +127,149 @@ def pos_rodBar_init(mesh, conn, det, w, N, get_props_func, K, nn, user_mapping, 
 
 
 def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=None):
-    """Lit le maillage, résout l'équation et affiche le résultat."""
+    """
+    Fonction principale du simulateur. 
+    Elle lit la géométrie, calibre la puissance mathématique sur une échelle physique réelle, 
+    lance l'intégration temporelle et anime les résultats.
+    """
     logger.info(f"Démarrage de run_full_simulation sur : {mesh_path}")
     print(f"Chargement du maillage : {mesh_path}")
 
+    # --- 1. LECTURE DU MAILLAGE ---
     try:
+        # Meshio lit le fichier .msh généré par Gmsh et extrait les coordonnées des points
         mesh = meshio.read(mesh_path)
     except Exception as e:
-        logger.error(
-            f"Erreur lors de la lecture du maillage {mesh_path} : {e}", exc_info=True
-        )
+        logger.error(f"Erreur lors de la lecture du maillage {mesh_path} : {e}", exc_info=True)
         raise
 
+    # nn=(Number of Nodes) est la dimension de nos futures matrices (M, K, R).
+    # Chaque nœud du maillage représente une inconnue spatiale pour le flux neutronique.
     nn = len(mesh.points)
-    logger.debug(f"Maillage chargé. Nombre de nœuds : {nn}")
+    logger.debug(f"Maillage chargé. Nombre de nœuds (Inconnues) : {nn}")
 
+    # --- EXTRACTION GÉOMÉTRIQUE ---
+    # On récupère les matrices Jacobiennes et leurs déterminants[cite: 3].
+    # C'est la base de la méthode P1 : on passe d'un vrai triangle déformé à un triangle parfait de référence[cite: 3].
     conn, det, w, N, jacobians, gradN_ref = extract_p1_fem_data(mesh)
 
+    # --- CALCUL DE LA PUISSANCE MAXIMALE ---
+    # Pour afficher une puissance en MégaWatts (MW)
+    # le code va chercher/calculer directement les valeurs qu'il a besoin
+    # dans le fichier GMSH 
+
+    # En éléments finis, l'aire géométrique exacte d'un triangle se calcule en intégrant 
+    # le déterminant du Jacobien ('det') sur les points de Gauss.
+    # Ici, nos poids de Gauss ('w') valent tous 1/6. On somme donc det * 1/6 sur les 3 points.
+    aires_triangles = np.sum(det, axis=1) * (1.0 / 6.0)
+    aire_combustible_cm2 = 0.0
+
+    # Gmsh stocke les triangles en "blocs" contigus
+    # Pour retrouver l'index global absolu d'un triangle, on doit calculer des décalages (offsets)
+    triangle_offsets = {}
+    current_offset = 0
+    for block_id, cell_block in enumerate(mesh.cells):
+        if cell_block.type == "triangle":
+            triangle_offsets[block_id] = current_offset
+            current_offset += len(cell_block.data)
+    
+    # On isole la zone Fuel (Combustible) car c'est la seule région qui dégage de la chaleur
+    if "Fuel" in mesh.cell_sets:
+        for block_id, elem_indices in enumerate(mesh.cell_sets["Fuel"]):
+            # Si le bloc contient bien des triangles (et pas des lignes de bordure)
+            if len(elem_indices) > 0 and mesh.cells[block_id].type == "triangle":
+                # On ajoute le décalage pour avoir l'index global correct
+                g_idx = elem_indices + triangle_offsets[block_id]
+                # On additionne l'aire de tous les triangles de combustible
+                aire_combustible_cm2 += np.sum(aires_triangles[g_idx])
+
+    # Le maillage 2D est plat. On simule physiquement une "tranche" d'un vrai réacteur.
+    # On impose une hauteur virtuelle de 1 mètre (100 cm)
+    HAUTEUR_CM = 100.0  
+    
+    # Volume total d'Uranium (en cm³) = Aire 2D * Hauteur
+    volume_combustible_cm3 = aire_combustible_cm2 * HAUTEUR_CM
+
+    # Hypothèse thermohydraulique : 1 cm³ de combustible nucléaire génère environ 100 Watts de chaleur.
+    DENSITE_PUISSANCE = 100.0
+    PUISSANCE_MAX_WATTS = volume_combustible_cm3 * DENSITE_PUISSANCE
+    
+    # Conversion de Watts vers MégaWatts (division par 1 million)
+    PUISSANCE_MAX_MW = PUISSANCE_MAX_WATTS / 1e6
+
+    logger.info(f"Analyse géométrique : Volume de Combustible = {volume_combustible_cm3:.0f} cm3")
+    logger.info(f"Puissance thermique maximale estimée du cœur : {PUISSANCE_MAX_MW:.2f} MW")
+
+    # --- CALIBRATION DU MODÈLE MATHÉMATIQUE ---
+    # Pour amorcer l'équation différentielle, on place une "graine" artificielle de 10 neutrons 
+    # sur chaque nœud (représentant les fissions spontanées ou la source de démarrage)
     phi_0 = np.ones(nn) * 10.0
-    puissance_initiale = np.sum(phi_0)
-    logger.debug(f"Flux initial défini. Puissance initiale = {puissance_initiale}")
+    
+    # Somme de Riemann numérique discrète : représente l'inventaire neutronique virtuel de notre modèle 2D.
+    puissance_brute_initiale = np.sum(phi_0)
+    
+    # On relie les mathématiques à la physique : 
+    # On décrète que cet état mathématique de départ correspond à 50% de la puissance physique 
+    # maximale que peut supporter le volume calculé précédemment.
+    PUISSANCE_INITIALE_MW = PUISSANCE_MAX_MW * 0.50  
+    
+    # Le FACTEUR_MW est le secret du solveur. C'est un scalaire de normalisation dynamique.
+    # Puisque l'équation de diffusion est linéaire, multiplier le flux calculé par ce facteur 
+    # n'altère en rien la dynamique (stabilité, transitoires), mais permet un affichage industriel (en MW).
+    FACTEUR_MW = PUISSANCE_INITIALE_MW / puissance_brute_initiale
 
-    POURCENTAGE_CIBLE = 150  # Puissance visée pour la stationnérité du réacteur
-    PUISSANCE_CIBLE = puissance_initiale * (POURCENTAGE_CIBLE / 100.0)
-    logger.info(f"Scénario PID: Démarrage visé à {POURCENTAGE_CIBLE}% -> Puissance cible = {PUISSANCE_CIBLE}")
+    # Scénario imposé : Le pilote automatique doit augmenter la puissance du réacteur jusqu'à 150%
+    POURCENTAGE_CIBLE = 150
+    PUISSANCE_CIBLE_MW = PUISSANCE_INITIALE_MW * (POURCENTAGE_CIBLE / 100.0)
+    logger.info(f"Scénario PID : Montée en puissance demandée (De {PUISSANCE_INITIALE_MW:.2f} MW à {PUISSANCE_CIBLE_MW:.2f} MW)")
 
-    erreur_precedente = None # Variable mémoire du controleur
+    # -- LE CONTROLEUR PD --
+    # Variable persistante pour calculer la dérivée (vitesse d'évolution de l'erreur)
+    erreur_precedente = None
+
     def controleur_PD(phi_actuel, phi_precedent, position_barres, dt):
-        """
-        Régulateur Proportionnel-Dérivé (PD) adapté à la Cinétique des Réacteurs.
-        """
         nonlocal erreur_precedente
 
-        puissance_t = np.sum(phi_actuel)
-        p_safe = max(puissance_t, 1e-5)
+        # On convertit la matrice de flux en puissance de chaleur en MW
+        puissance_mw = np.sum(phi_actuel) * FACTEUR_MW
         
-        # La dynamique d'un réacteur est régie par des équations différentielles exponentielles.
-        # Une erreur linéaire classique (Cible - Actuel) produirait des valeurs démesurées 
-        # lors des transitoires, provoquant la saturation instantanée des actionneurs.
-        # L'erreur logarithmique permet de piloter la réponse exponentielle de façon quasi-linéaire.
-        erreur = np.log(p_safe / PUISSANCE_CIBLE)
+        # Sécurité : On bloque la puissance minimale à un chiffre très petit 
+        # pour empêcher le logarithme (np.log) de crasher en cas d'extinction totale du flux
+        p_safe_mw = max(puissance_mw, 1e-10)
+        
+        # Erreur Logarithmique : Le flux nucléaire évolue exponentiellement
+        # En utilisant un rapport logarithmique au lieu d'une soustraction classique, 
+        # on rend la commande quasi-linéaire et on évite de saturer les actionneurs d'un coup sec.
+        erreur = np.log(p_safe_mw / PUISSANCE_CIBLE_MW)
 
         if erreur_precedente is None:
             erreur_precedente = erreur
 
-        # OMEGA (ω) : L'inverse de la Période du réacteur (T)
-        # C'est la dérivée temporelle de l'erreur logarithmique.
-        # Ce terme anticipe l'inertie neutronique : si ω est très élevé, la puissance 
-        # grimpe trop vite, et ce terme forcera l'insertion des barres avant même d'atteindre la cible.
+        # Action Dérivée (Oméga) : L'inverse de la Période du réacteur.
+        # C'est un radar d'anticipation. Si ce terme est grand, la puissance grimpe trop vite,
+        # et le contrôleur freinera (enfoncera les barres) avant même d'avoir atteint la cible !
         omega = (erreur - erreur_precedente) / dt
 
-        # Kp agit comme la raideur d'un ressort vers la cible.
-        # Kd agit comme un amortisseur visqueux pour tuer les oscillations (effet yoyo).
-        Kp = 0.15   
-        Kd = 0.50   
-
-        # Loi de commande finale
+        # Loi de commande PD
+        Kp = 0.15  # Gain proportionnel : la "force" de rappel vers la cible en MégaWatts
+        Kd = 0.50  # Gain dérivé : la constante pour amortir le mouvement et éviter un emballement
+        
+        # Vitesse demandée (en fraction de course de barre par seconde)
         vitesse_demandee = (Kp * erreur) + (Kd * omega)
+        
+        # Delta de position de la barre de contrôle pour ce petit pas de temps 'dt'
         delta_pos = vitesse_demandee * dt
 
-        # Saturation mécanique des actionneurs (Vitesse maximale physiquement possible)
+        # Mécanique physique des barres de contrôle : 
+        # Une vraie barre de Boral ne peut pas se téléporter. On limite sa vitesse maximale à 40% de la hauteur par seconde.
+        # Pour être réaliste
         vitesse_max = 0.40
         delta_pos = np.clip(delta_pos, -vitesse_max * dt, vitesse_max * dt)
 
+        # Nouvelle position globale (bornée entre 0.0 (Levée = Eau) et 1.0 (Insérée = Boral pur))
         nouvelle_pos = np.clip(position_barres + delta_pos, 0.0, 1.0)
-
+        
+        # Sauvegarde en mémoire pour l'itération dt suivante
         erreur_precedente = erreur
         return nouvelle_pos
 
@@ -255,58 +333,104 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
 
         return times, puissance_history
 
-    print("Génération de l'animation...")
-    logger.info("Démarrage de la génération de l'animation Matplotlib...")
+    print("Génération du Dashboard interactif...")
+    logger.info("Démarrage de l'animation Matplotlib...")
     from matplotlib.animation import FuncAnimation
+    import matplotlib.gridspec as gridspec
 
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.set_aspect("equal")
-    ax.axis("off")  
-    fig.patch.set_facecolor("#1e1e1e")  
-
-    mesh_plot = ax.tripcolor(
+    # Création d'une fenêtre large avec 2 zones (Gauche: Maillage, Droite: Graphique)
+    fig = plt.figure(figsize=(14, 6))
+    fig.patch.set_facecolor("#1e1e1e")  # Mode sombre "Salle de commande"
+    gs = gridspec.GridSpec(1, 2, width_ratios=[1.2, 1])
+    
+    ax_mesh = fig.add_subplot(gs[0])
+    ax_curve = fig.add_subplot(gs[1])
+    
+    # --- PRÉ-CALCULS POUR L'ÉCHELLE FIXE ---
+    # On trouve le flux maximum absolu de TOUTE la simulation pour figer la colorbar
+    flux_global_max = np.max(solutions)
+    flux_global_max = max(flux_global_max, 1e-5) # Sécurité si le réacteur est éteint
+    
+    # Pré-calcul du tableau des puissances en MW pour le graphique 1D
+    puissances_mw = [np.sum(sol) * FACTEUR_MW for sol in solutions]
+    
+    # -- CODE POUR LE GRAPHE DE GAUCHE MONTRANT LE REACTEUR --
+    ax_mesh.set_aspect("equal")
+    ax_mesh.axis("off")
+    ax_mesh.set_title("Cartographie du Flux Neutronique", color="white", fontsize=14)
+    
+    mesh_plot = ax_mesh.tripcolor(
         mesh.points[:, 0],
         mesh.points[:, 1],
         mesh.cells_dict["triangle"],
         solutions[0],
         shading="gouraud",
         cmap="magma",
+        vmin=0, 
+        vmax=flux_global_max
     )
-
-    cbar = fig.colorbar(mesh_plot, ax=ax, shrink=0.8)
-    cbar.set_label("Flux Neutronique", color="white")
+    
+    cbar = fig.colorbar(mesh_plot, ax=ax_mesh, shrink=0.8)
+    cbar.set_label("Flux (n/cm²/s)", color="white")
     cbar.ax.yaxis.set_tick_params(color="white")
     plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="white")
-
-    puissance_init = np.sum(solutions[0])
-    title = ax.set_title(f"Temps : 0.00 s  |  Puissance : {puissance_init:,.0f}", color="white", fontsize=14)
-
+    
+    # -- CODE POUR LE GRAPHE DE DROITE SUR LE CONTROLEUR --
+    ax_curve.set_facecolor("#2b2b2b")
+    ax_curve.tick_params(colors="white")
+    for spine in ax_curve.spines.values():
+        spine.set_color("#555555")
+    
+    ax_curve.set_title("Cinétique du Réacteur (Contrôleur PD)", color="white", fontsize=14)
+    ax_curve.set_xlabel("Temps (s)", color="white")
+    ax_curve.set_ylabel("Puissance Thermique (MW)", color="white")
+    ax_curve.grid(color="#444444", linestyle="--", linewidth=0.5)
+    
+    puissance_max_graphique = max(max(puissances_mw), PUISSANCE_CIBLE_MW) * 1.20
+    ax_curve.set_xlim(times[0], times[-1])
+    ax_curve.set_ylim(0, puissance_max_graphique)
+    
+    ax_curve.axhline(PUISSANCE_CIBLE_MW, color="#00ff00", linestyle="--", linewidth=2, label="Consigne (Cible)")
+    
+    times_graphique = np.linspace(times[0], times[-1], len(solutions))
+    
+    ax_curve.plot(times_graphique, puissances_mw, color="#555555", linewidth=1.5, zorder=1)
+    
+    # Éléments dynamiques
+    ligne_temps = ax_curve.axvline(times_graphique[0], color="red", linewidth=1.5, alpha=0.8, zorder=2)
+    point_puissance, = ax_curve.plot([times_graphique[0]], [puissances_mw[0]], marker="o", color="red", markersize=6, zorder=3, label="P(t) Actuelle")
+    trace_courbe, = ax_curve.plot([], [], color="#00d2ff", linewidth=2.5, zorder=2)
+    
+    ax_curve.legend(facecolor="#1e1e1e", edgecolor="white", labelcolor="white", loc="lower right")
+    
+    # -- CODE POUR L'ANIMATION --
+    hud_text = fig.suptitle("Initialisation...", color="#00d2ff", fontsize=16, fontweight="bold")
+    
     def animate(i):
+        # Mise à jour du maillage
         mesh_plot.set_array(solutions[i])
-
-        # Recalibrage dynamique de l'échelle des couleurs (clim)
-        # Indispensable car la magnitude du flux évolue de manière exponentielle au cours du temps.
-        vmax_current = np.max(solutions[i])
-        if vmax_current < 1e-5:
-            vmax_current = 1e-5
-        mesh_plot.set_clim(vmin=0, vmax=vmax_current)
-
-        puissance_actuelle = np.sum(solutions[i])
-
-        # Interpolation temporelle
-        # Comme l'intégrateur a pu sauter la sauvegarde de certaines étapes (ex: i % 2 == 0)
-        # pour optimiser la mémoire, on doit déduire le temps continu proportionnellement à l'indice.
-        progression = i / max(1, len(solutions) - 1)
-        temps_actuel = times[0] + progression * (times[-1] - times[0])
-
-        title.set_text(f"Temps : {temps_actuel:.2f} s  |  Puissance : {puissance_actuelle:,.0f}")
         
-        return mesh_plot, title
+        # Le temps actuel correspond simplement à l'index i de notre axe synchronisé
+        temps_actuel = times_graphique[i]
+        
+        # Mise à jour du Radar sur le graphique
+        ligne_temps.set_xdata([temps_actuel, temps_actuel])
+        point_puissance.set_data([temps_actuel], [puissances_mw[i]])
+        
+        # Fait grandir la courbe bleue au fur et à mesure avec les bonnes dimensions
+        trace_courbe.set_data(times_graphique[:i+1], puissances_mw[:i+1])
+        
+        # Affichage numérique (HUD) global
+        hud_text.set_text(f"Temps : {temps_actuel:.2f} s  |  Puissance : {puissances_mw[i]:.2f} MW")
+        
+        return mesh_plot, ligne_temps, point_puissance, trace_courbe, hud_text
 
-    ani = FuncAnimation(fig, animate, frames=len(solutions), interval=50, blit=False)
-
+    # interval=40 ms donne une animation très fluide à 25 images/secondes
+    ani = FuncAnimation(fig, animate, frames=len(solutions), interval=40, blit=False)
+    
     plt.tight_layout()
+    plt.subplots_adjust(top=0.88) # Laisse de la place pour la partie supérieure
     plt.show()
 
-    logger.info("Fin de l'exécution de run_full_simulation.")
+    logger.info("Fin de la génération de l'animation.")
     return solutions[-1]
