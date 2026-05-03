@@ -128,7 +128,7 @@ def pos_rodBar_init(mesh, conn, det, w, N, get_props_func, K, nn, user_mapping, 
     return pos_critique
 
 
-def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=None):
+def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=None, kd_value=0.50):
     """
     Fonction principale du simulateur. 
     Elle lit la géométrie, calibre la puissance mathématique sur une échelle physique réelle, 
@@ -254,7 +254,7 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
 
         # Loi de commande PD
         Kp = 0.15  # Gain proportionnel : la "force" de rappel vers la cible en MégaWatts
-        Kd = 0.50  # Gain dérivé : la constante pour amortir le mouvement et éviter un emballement
+        Kd = kd_value  # Gain dérivé : la constante pour amortir le mouvement et éviter un emballement
         
         # Vitesse demandée (en fraction de course de barre par seconde)
         vitesse_demandee = (Kp * erreur) + (Kd * omega)
@@ -335,128 +335,129 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
 
         return times, puissance_history
 
-    print("Génération du Dashboard interactif...")
-    logger.info("Démarrage de l'animation Matplotlib...")
-    from matplotlib.animation import FuncAnimation
-    import matplotlib.gridspec as gridspec
+    if not headless:
+        print("Génération du Dashboard interactif...")
+        logger.info("Démarrage de l'animation Matplotlib...")
+        from matplotlib.animation import FuncAnimation
+        import matplotlib.gridspec as gridspec
 
-    # Création d'une fenêtre large avec 2 zones (Gauche: Maillage, Droite: Graphique)
-    fig = plt.figure(figsize=(14, 6))
-    fig.patch.set_facecolor("#1e1e1e")  # Mode sombre "Salle de commande"
-    gs = gridspec.GridSpec(1, 2, width_ratios=[1.2, 1])
-    
-    ax_mesh = fig.add_subplot(gs[0])
-    ax_curve = fig.add_subplot(gs[1])
-    
-    # --- PRÉ-CALCULS POUR L'ÉCHELLE FIXE ---
-    # On trouve le flux maximum absolu de TOUTE la simulation pour figer la colorbar
-    flux_global_max = np.max(solutions)
-    flux_global_max = max(flux_global_max, 1e-5) # Sécurité si le réacteur est éteint
-    
-    # Pré-calcul du tableau des puissances en MW pour le graphique 1D
-    puissances_mw = [np.sum(sol) * FACTEUR_MW for sol in solutions]
-    
-    # -- CODE POUR LE GRAPHE DE GAUCHE MONTRANT LE REACTEUR --
-    ax_mesh.set_aspect("equal")
-    ax_mesh.axis("off")
-    ax_mesh.set_title("Cartographie du Flux Neutronique", color="white", fontsize=14)
-    
-    mesh_plot = ax_mesh.tripcolor(
-        mesh.points[:, 0],
-        mesh.points[:, 1],
-        mesh.cells_dict["triangle"],
-        solutions[0],
-        shading="gouraud",
-        cmap="magma",
-        vmin=0, 
-        vmax=flux_global_max
-    )
-    
-    cbar = fig.colorbar(mesh_plot, ax=ax_mesh, shrink=0.8)
-    cbar.set_label("Flux (n/cm²/s)", color="white")
-    cbar.ax.yaxis.set_tick_params(color="white")
-    plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="white")
-    
-    # -- CODE POUR LE GRAPHE DE DROITE SUR LE CONTROLEUR --
-    ax_curve.set_facecolor("#2b2b2b")
-    ax_curve.tick_params(colors="white")
-    for spine in ax_curve.spines.values():
-        spine.set_color("#555555")
-    
-    ax_curve.set_title("Cinétique du Réacteur (Contrôleur PD)", color="white", fontsize=14)
-    ax_curve.set_xlabel("Temps (s)", color="white")
-    ax_curve.set_ylabel("Puissance Thermique (MW)", color="white")
-    ax_curve.grid(color="#444444", linestyle="--", linewidth=0.5)
-    
-    puissance_max_graphique = max(max(puissances_mw), PUISSANCE_CIBLE_MW) * 1.20
-    ax_curve.set_xlim(times[0], times[-1])
-    ax_curve.set_ylim(0, puissance_max_graphique)
-    
-    ax_curve.axhline(PUISSANCE_CIBLE_MW, color="#00ff00", linestyle="--", linewidth=2, label="Consigne (Cible)")
-    
-    times_graphique = np.linspace(times[0], times[-1], len(solutions))
-    
-    ax_curve.plot(times_graphique, puissances_mw, color="#555555", linewidth=1.5, zorder=1)
-    
-    # Éléments dynamiques
-    ligne_temps = ax_curve.axvline(times_graphique[0], color="red", linewidth=1.5, alpha=0.8, zorder=2)
-    point_puissance, = ax_curve.plot([times_graphique[0]], [puissances_mw[0]], marker="o", color="red", markersize=6, zorder=3, label="P(t) Actuelle")
-    trace_courbe, = ax_curve.plot([], [], color="#00d2ff", linewidth=2.5, zorder=2)
-    
-    ax_curve.legend(facecolor="#1e1e1e", edgecolor="white", labelcolor="white", loc="lower right")
-    
-    # -- CODE POUR L'ANIMATION --
-    hud_text = fig.suptitle("Initialisation...", color="#00d2ff", fontsize=16, fontweight="bold")
-    
-    def animate(i):
-        # Mise à jour du maillage
-        mesh_plot.set_array(solutions[i])
+        # Création d'une fenêtre large avec 2 zones (Gauche: Maillage, Droite: Graphique)
+        fig = plt.figure(figsize=(14, 6))
+        fig.patch.set_facecolor("#1e1e1e")  # Mode sombre "Salle de commande"
+        gs = gridspec.GridSpec(1, 2, width_ratios=[1.2, 1])
         
-        # Le temps actuel correspond simplement à l'index i de notre axe synchronisé
-        temps_actuel = times_graphique[i]
+        ax_mesh = fig.add_subplot(gs[0])
+        ax_curve = fig.add_subplot(gs[1])
         
-        # Mise à jour du Radar sur le graphique
-        ligne_temps.set_xdata([temps_actuel, temps_actuel])
-        point_puissance.set_data([temps_actuel], [puissances_mw[i]])
+        # --- PRÉ-CALCULS POUR L'ÉCHELLE FIXE ---
+        # On trouve le flux maximum absolu de TOUTE la simulation pour figer la colorbar
+        flux_global_max = np.max(solutions)
+        flux_global_max = max(flux_global_max, 1e-5) # Sécurité si le réacteur est éteint
         
-        # Fait grandir la courbe bleue au fur et à mesure avec les bonnes dimensions
-        trace_courbe.set_data(times_graphique[:i+1], puissances_mw[:i+1])
+        # Pré-calcul du tableau des puissances en MW pour le graphique 1D
+        puissances_mw = [np.sum(sol) * FACTEUR_MW for sol in solutions]
         
-        # Affichage numérique (HUD) global
-        hud_text.set_text(f"Temps : {temps_actuel:.2f} s  |  Puissance : {puissances_mw[i]:.2f} MW")
+        # -- CODE POUR LE GRAPHE DE GAUCHE MONTRANT LE REACTEUR --
+        ax_mesh.set_aspect("equal")
+        ax_mesh.axis("off")
+        ax_mesh.set_title("Cartographie du Flux Neutronique", color="white", fontsize=14)
         
-        return mesh_plot, ligne_temps, point_puissance, trace_courbe, hud_text
+        mesh_plot = ax_mesh.tripcolor(
+            mesh.points[:, 0],
+            mesh.points[:, 1],
+            mesh.cells_dict["triangle"],
+            solutions[0],
+            shading="gouraud",
+            cmap="magma",
+            vmin=0, 
+            vmax=flux_global_max
+        )
+        
+        cbar = fig.colorbar(mesh_plot, ax=ax_mesh, shrink=0.8)
+        cbar.set_label("Flux (n/cm²/s)", color="white")
+        cbar.ax.yaxis.set_tick_params(color="white")
+        plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="white")
+        
+        # -- CODE POUR LE GRAPHE DE DROITE SUR LE CONTROLEUR --
+        ax_curve.set_facecolor("#2b2b2b")
+        ax_curve.tick_params(colors="white")
+        for spine in ax_curve.spines.values():
+            spine.set_color("#555555")
+        
+        ax_curve.set_title("Cinétique du Réacteur (Contrôleur PD)", color="white", fontsize=14)
+        ax_curve.set_xlabel("Temps (s)", color="white")
+        ax_curve.set_ylabel("Puissance Thermique (MW)", color="white")
+        ax_curve.grid(color="#444444", linestyle="--", linewidth=0.5)
+        
+        puissance_max_graphique = max(max(puissances_mw), PUISSANCE_CIBLE_MW) * 1.20
+        ax_curve.set_xlim(times[0], times[-1])
+        ax_curve.set_ylim(0, puissance_max_graphique)
+        
+        ax_curve.axhline(PUISSANCE_CIBLE_MW, color="#00ff00", linestyle="--", linewidth=2, label="Consigne (Cible)")
+        
+        times_graphique = np.linspace(times[0], times[-1], len(solutions))
+        
+        ax_curve.plot(times_graphique, puissances_mw, color="#555555", linewidth=1.5, zorder=1)
+        
+        # Éléments dynamiques
+        ligne_temps = ax_curve.axvline(times_graphique[0], color="red", linewidth=1.5, alpha=0.8, zorder=2)
+        point_puissance, = ax_curve.plot([times_graphique[0]], [puissances_mw[0]], marker="o", color="red", markersize=6, zorder=3, label="P(t) Actuelle")
+        trace_courbe, = ax_curve.plot([], [], color="#00d2ff", linewidth=2.5, zorder=2)
+        
+        ax_curve.legend(facecolor="#1e1e1e", edgecolor="white", labelcolor="white", loc="lower right")
+        
+        # -- CODE POUR L'ANIMATION --
+        hud_text = fig.suptitle("Initialisation...", color="#00d2ff", fontsize=16, fontweight="bold")
+        
+        def animate(i):
+            # Mise à jour du maillage
+            mesh_plot.set_array(solutions[i])
+            
+            # Le temps actuel correspond simplement à l'index i de notre axe synchronisé
+            temps_actuel = times_graphique[i]
+            
+            # Mise à jour du Radar sur le graphique
+            ligne_temps.set_xdata([temps_actuel, temps_actuel])
+            point_puissance.set_data([temps_actuel], [puissances_mw[i]])
+            
+            # Fait grandir la courbe bleue au fur et à mesure avec les bonnes dimensions
+            trace_courbe.set_data(times_graphique[:i+1], puissances_mw[:i+1])
+            
+            # Affichage numérique (HUD) global
+            hud_text.set_text(f"Temps : {temps_actuel:.2f} s  |  Puissance : {puissances_mw[i]:.2f} MW")
+            
+            return mesh_plot, ligne_temps, point_puissance, trace_courbe, hud_text
 
-    # Moteur d'animation (interval=40 ms donne 25 images/seconde)
-    ani = FuncAnimation(fig, animate, frames=len(solutions), interval=40, blit=False)
-    
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.88) # Laisse de la place pour le bandeau supérieur
+        # Moteur d'animation (interval=40 ms donne 25 images/seconde)
+        ani = FuncAnimation(fig, animate, frames=len(solutions), interval=40, blit=False)
+        
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.88) # Laisse de la place pour le bandeau supérieur
 
-    # --- SAUVEGARDE DU GIF ---
-    # 1. Création d'un dossier dédié (il se créera là où tu lances ton script)
-    dossier_sortie = Path("animations_sauvegardes")
-    dossier_sortie.mkdir(parents=True, exist_ok=True)
-    
-    # 2. Nom de fichier dynamique avec horodatage (AnnéeMoisJour_HeureMinuteSeconde)
-    horodatage = datetime.now().strftime("%Y%m%d_%H%M%S")
-    nom_fichier = dossier_sortie / f"simulation_reacteur_{horodatage}.gif"
-    
-    # 3. La sauvegarde (Attention : se fait AVANT le plt.show())
-    logger.info(f"Création du GIF en cours...")
-    logger.info(f"Sauvegarde de l'animation vers {nom_fichier}...")
-    
-    try:
-        # On sauvegarde à 25 fps (correspond à ton intervalle de 40ms : 1000/40 = 25)
-        ani.save(nom_fichier, writer='pillow', fps=25)
-        logger.info(f"L'animation a bien été sauvegardée avec succès")
-    except Exception as e:
-        logger.info(f"Échec de la sauvegarde GIF : {e}")
+        # --- SAUVEGARDE DU GIF ---
+        # 1. Création d'un dossier dédié (il se créera là où tu lances ton script)
+        dossier_sortie = Path("animations_sauvegardes")
+        dossier_sortie.mkdir(parents=True, exist_ok=True)
+        
+        # 2. Nom de fichier dynamique avec horodatage (AnnéeMoisJour_HeureMinuteSeconde)
+        horodatage = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nom_fichier = dossier_sortie / f"simulation_reacteur_{horodatage}.gif"
+        
+        # 3. La sauvegarde (Attention : se fait AVANT le plt.show())
+        logger.info(f"Création du GIF en cours...")
+        logger.info(f"Sauvegarde de l'animation vers {nom_fichier}...")
+        
+        try:
+            # On sauvegarde à 25 fps (correspond à ton intervalle de 40ms : 1000/40 = 25)
+            ani.save(nom_fichier, writer='pillow', fps=25)
+            logger.info(f"L'animation a bien été sauvegardée avec succès")
+        except Exception as e:
+            logger.info(f"Échec de la sauvegarde GIF : {e}")
 
-    # =========================================================================
-    
-    # Affiche la fenêtre à l'écran après avoir sauvegardé
-    plt.show()
+        # =========================================================================
+        
+        # Affiche la fenêtre à l'écran après avoir sauvegardé
+        plt.show()
 
     logger.info("Fin de la génération de l'animation.")
-    return solutions[-1]
+    return solutions, times, puissances_mw
