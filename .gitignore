@@ -25,6 +25,8 @@ output/meshes/
 output/plots/
 output/animations/
 
+animations_sauvegardes/
+
 # Fichiers de données temporaires ou volumineux
 *.npy
 *.npz

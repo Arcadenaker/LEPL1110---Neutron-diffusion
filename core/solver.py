@@ -2,6 +2,8 @@ import numpy as np
 import meshio
 from scipy.sparse.linalg import eigsh
 import matplotlib.pyplot as plt
+from datetime import datetime
+from pathlib import Path
 
 from core.boundary_cond import get_dirichlet_nodes
 from core.time_integration import TimeIntegrator
@@ -425,11 +427,35 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
         
         return mesh_plot, ligne_temps, point_puissance, trace_courbe, hud_text
 
-    # interval=40 ms donne une animation très fluide à 25 images/secondes
+    # Moteur d'animation (interval=40 ms donne 25 images/seconde)
     ani = FuncAnimation(fig, animate, frames=len(solutions), interval=40, blit=False)
     
     plt.tight_layout()
-    plt.subplots_adjust(top=0.88) # Laisse de la place pour la partie supérieure
+    plt.subplots_adjust(top=0.88) # Laisse de la place pour le bandeau supérieur
+
+    # --- SAUVEGARDE DU GIF ---
+    # 1. Création d'un dossier dédié (il se créera là où tu lances ton script)
+    dossier_sortie = Path("animations_sauvegardes")
+    dossier_sortie.mkdir(parents=True, exist_ok=True)
+    
+    # 2. Nom de fichier dynamique avec horodatage (AnnéeMoisJour_HeureMinuteSeconde)
+    horodatage = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nom_fichier = dossier_sortie / f"simulation_reacteur_{horodatage}.gif"
+    
+    # 3. La sauvegarde (Attention : se fait AVANT le plt.show())
+    logger.info(f"Création du GIF en cours...")
+    logger.info(f"Sauvegarde de l'animation vers {nom_fichier}...")
+    
+    try:
+        # On sauvegarde à 25 fps (correspond à ton intervalle de 40ms : 1000/40 = 25)
+        ani.save(nom_fichier, writer='pillow', fps=25)
+        logger.info(f"L'animation a bien été sauvegardée avec succès")
+    except Exception as e:
+        logger.info(f"Échec de la sauvegarde GIF : {e}")
+
+    # =========================================================================
+    
+    # Affiche la fenêtre à l'écran après avoir sauvegardé
     plt.show()
 
     logger.info("Fin de la génération de l'animation.")
