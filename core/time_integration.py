@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.sparse import csc_matrix, csr_matrix
-from scipy.sparse.linalg import splu
+import pypardiso
 
 from core.assembly import assemble_mass_or_reaction
 
@@ -130,7 +130,7 @@ class TimeIntegrator:
                 # C'est l'opération la plus lourde de tout le programme
                 # Elle pré-mâche le travail de résolution d'équation pour les prochaines étapes.
                 A_FF = A[free_dofs, :][:, free_dofs]
-                solve_lu = splu(A_FF)
+                solve_lu = pypardiso.factorized(A_FF)
 
                 # On sauvegarde la position dans notre système de cache
                 last_computed_pos = current_rod_pos
@@ -141,7 +141,7 @@ class TimeIntegrator:
             b_full = B_mat.dot(phi_n)
             rhs_reduced = b_full[free_dofs]
 
-            phi_free_np1 = solve_lu.solve(rhs_reduced)
+            phi_free_np1 = solve_lu(rhs_reduced)
 
             # On reconstruit l'image complète du maillage en réintégrant les zéros sur les bords
             phi_np1 = np.zeros(nn)

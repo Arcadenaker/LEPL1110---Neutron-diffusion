@@ -132,7 +132,6 @@ def get_material_properties(mesh, elem_tags, rod_insertion=1.0, user_mapping=Non
     # Fallback : Si l'interface graphique (GUI) plante ou n'envoie rien, 
     # on force une configuration de réacteur standard (style REP).
     if user_mapping is None:
-        logger.warning("Aucun user_mapping fourni, utilisation des matériaux par défaut.")
         user_mapping = {
             "Fuel": "Fuel_Uranium",
             "Moderator": "Water_Moderator",

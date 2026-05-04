@@ -333,7 +333,7 @@ def run_full_simulation(mesh_path, user_mapping=None, headless=False, save_csv=N
             except Exception as e:
                 logger.error(f"Échec de l'écriture du fichier CSV {save_csv} : {e}", exc_info=True)
 
-        return times, puissance_history
+        return solutions, times, puissance_history
 
     if not headless:
         print("Génération du Dashboard interactif...")

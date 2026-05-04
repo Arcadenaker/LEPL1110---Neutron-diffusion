@@ -21,10 +21,7 @@ ENV/
 
 # --- Sorties du Projet (Simulation) ---
 # Dossiers de résultats décrits dans votre README
-output/meshes/
-output/plots/
-output/animations/
-
+output/
 animations_sauvegardes/
 
 # Fichiers de données temporaires ou volumineux
