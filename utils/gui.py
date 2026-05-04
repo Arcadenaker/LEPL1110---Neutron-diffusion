@@ -459,7 +459,13 @@ class ReactorGUI(tk.Tk):
         btn_solve.pack(pady=(5, 0))
 
         ttk.Separator(btn_container, orient="horizontal").pack(fill="x", pady=5)
-
+        ttk.Button(
+            btn_container,
+            text="🔬 Cas A : Étude de Pilotabilité (Statique)",
+            width=btn_width,
+            command=self.action_run_case_A,
+            style="Accent.TButton",
+        ).pack(pady=(5, 0))
         ttk.Button(
             btn_container,
             text="Étude Paramétrique (Batch)",
@@ -1283,7 +1289,132 @@ class ReactorGUI(tk.Tk):
             top_window.destroy()
         except tk.TclError:
             pass
+    def action_run_case_A(self):
+        """Lance l'étude Cas A par force brute sur des configurations discrètes."""
+        p_ui = self.get_current_params()
+        if not p_ui: return
 
+        # Fenêtre de dialogue pour configurer la force brute
+        diag = tk.Toplevel(self)
+        diag.title("Cas A : Force Brute Configurations")
+        diag.geometry("350x220")
+        diag.configure(bg=self.BG_COLOR)
+        diag.transient(self)
+
+        tk.Label(diag, text=f"Rayon actuel ciblé : Rn = {p_ui['R_noyau']} cm", 
+                 bg=self.BG_COLOR, fg="#00d2ff", font=("Segoe UI", 10, "bold")).pack(pady=10)
+
+        tk.Label(diag, text="Nombre MAX de couronnes de contrôle à tester :", 
+                 bg=self.BG_COLOR, fg=self.FG_COLOR).pack(pady=5)
+        
+        var_max_rings = tk.IntVar(value=3)
+        ttk.Spinbox(diag, from_=1, to=10, textvariable=var_max_rings, width=10).pack()
+
+        tk.Label(diag, text="(L'algorithme testera 50% et 100% pour chaque couronne)", 
+                 bg=self.BG_COLOR, fg="#888888", font=("Segoe UI", 8, "italic")).pack(pady=5)
+
+        def launch():
+            p_ui.update({
+                "max_rings": var_max_rings.get(),
+                "mat_mod": self.var_mat_mod.get(),
+                "mat_ref": self.var_mat_ref.get(),
+                "mat_cr": self.var_mat_cr.get()
+            })
+            diag.destroy()
+            self._execute_case_A_worker(p_ui)
+
+        ttk.Button(diag, text="🚀 Lancer la Force Brute", command=launch, style="Accent.TButton").pack(pady=15)
+
+    def _execute_case_A_worker(self, params):
+        top = tk.Toplevel(self)
+        top.title("Calcul en cours...")
+        top.geometry("400x120")
+        top.configure(bg=self.BG_COLOR)
+        top.attributes("-topmost", True)
+        
+        # SÉCURITÉ 1 : On désactive la croix rouge de la fenêtre de chargement.
+        # Si l'utilisateur la ferme pendant que Gmsh tourne en fond, ça fait crasher Tkinter.
+        top.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        lbl = tk.Label(top, text="Maillage et Analyse...", bg=self.BG_COLOR, fg=self.FG_COLOR)
+        lbl.pack(pady=15)
+        
+        # SÉCURITÉ 2 : On stocke la variable directement dans l'objet 'top'.
+        # Cela empêche le Garbage Collector du thread de détruire la variable.
+        top.pv = tk.DoubleVar()
+        pb = ttk.Progressbar(top, variable=top.pv, maximum=100)
+        pb.pack(fill="x", padx=20)
+
+        # Import du script
+        from cases.case1_statique import run_discrete_brute_force
+
+        # SÉCURITÉ 3 : Fonction encapsulée proprement pour le main thread
+        def update_ui(c, t, m):
+            try:
+                if top.winfo_exists():
+                    top.pv.set((c/t)*100)
+                    lbl.config(text=m)
+            except tk.TclError:
+                pass
+
+        # Le callback ne stocke rien localement, il transfère juste au main thread
+        def cb(c, t, m):
+            self.after(0, update_ui, c, t, m)
+
+        def worker():
+            try:
+                # Lancement du calcul lourd
+                labels, results = run_discrete_brute_force(params, cb)
+                
+                # Une fois terminé, on délègue l'affichage graphique au main thread
+                self.after(0, self._plot_case_A_discrete, labels, results, params["R_noyau"], top)
+                
+            except Exception as e:
+                logger.error(f"Erreur thread: {e}", exc_info=True)
+                self.after(0, lambda: messagebox.showerror("Erreur de Calcul", str(e)) if top.winfo_exists() else None)
+                self.after(0, top.destroy)
+
+        # Lancement du thread en tâche de fond
+        thread = threading.Thread(target=worker)
+        thread.daemon = True
+        thread.start()
+
+    def _plot_case_A_discrete(self, labels, results, r_noyau, top_window):
+        try:
+            if top_window.winfo_exists():
+                top_window.destroy()
+        except tk.TclError:
+            pass
+
+        plt.close("Cas A - Pilotabilité (Discret)")
+        fig, ax = plt.subplots(num="Cas A - Pilotabilité (Discret)", figsize=(10, 6))
+        fig.patch.set_facecolor(self.BG_COLOR)
+        ax.set_facecolor(self.PANEL_BG)
+
+        # Tracé des points catégoriels
+        x_positions = np.arange(len(labels))
+        
+        ax.plot(x_positions, results["Fuel_Uranium"], marker='o', markersize=8, linestyle='-', linewidth=2, color="#00d2ff", label="UOX")
+        ax.plot(x_positions, results["Fuel_MOX"], marker='s', markersize=8, linestyle='-', linewidth=2, color="#ff4500", label="MOX")
+
+        # Zone optimale
+        ax.axhspan(0.3, 0.7, color='#125e2a', alpha=0.3, label='Plage de Pilotage Optimale [0.3 - 0.7]')
+        ax.axhline(1.0, color='red', linestyle='--', linewidth=1)
+        ax.axhline(0.0, color='grey', linestyle='--', linewidth=1)
+
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(labels, color=self.FG_COLOR)
+        
+        ax.set_xlabel("Configuration (Anneaux & Densité)", color=self.FG_COLOR, fontweight="bold")
+        ax.set_ylabel("Position d'équilibre (Z_eq)", color=self.FG_COLOR, fontweight="bold")
+        ax.set_title(f"Cas A : Configurations Constructibles pour Rn = {r_noyau} cm", color=self.FG_COLOR, fontsize=12, fontweight="bold")
+        
+        ax.tick_params(colors=self.FG_COLOR)
+        ax.grid(True, color=self.BORDER_COLOR, linestyle=":", axis='y')
+        ax.legend(facecolor=self.ENTRY_BG, edgecolor=self.BORDER_COLOR, labelcolor=self.FG_COLOR)
+
+        plt.tight_layout()
+        plt.show()
 
 if __name__ == "__main__":
     app = ReactorGUI()
