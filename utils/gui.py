@@ -466,6 +466,15 @@ class ReactorGUI(tk.Tk):
             command=self.action_run_case_A,
             style="Accent.TButton",
         ).pack(pady=(5, 0))
+
+        ttk.Button(
+            btn_container,
+            text="🔬 Cas 3 : Optimisation du Réflecteur",
+            width=btn_width,
+            command=self.action_run_case_3,
+            style="Accent.TButton",
+        ).pack(pady=(5, 0))
+
         ttk.Button(
             btn_container,
             text="Étude Paramétrique (Batch)",
@@ -1289,6 +1298,7 @@ class ReactorGUI(tk.Tk):
             top_window.destroy()
         except tk.TclError:
             pass
+
     def action_run_case_A(self):
         """Lance l'étude Cas A par force brute sur des configurations discrètes."""
         p_ui = self.get_current_params()
@@ -1411,6 +1421,151 @@ class ReactorGUI(tk.Tk):
         
         ax.tick_params(colors=self.FG_COLOR)
         ax.grid(True, color=self.BORDER_COLOR, linestyle=":", axis='y')
+        ax.legend(facecolor=self.ENTRY_BG, edgecolor=self.BORDER_COLOR, labelcolor=self.FG_COLOR)
+
+        plt.tight_layout()
+        plt.show()
+    
+    def action_run_case_3(self):
+        """Lance l'étude Cas 3 d'optimisation du réflecteur via une boîte de dialogue paramétrable."""
+        p_ui = self.get_current_params()
+        if not p_ui: return
+
+        diag = tk.Toplevel(self)
+        diag.title("Cas 3 : Optimisation Réflecteur")
+        # On agrandit la fenêtre pour accueillir les nouveaux paramètres
+        diag.geometry("400x380")
+        diag.configure(bg=self.BG_COLOR)
+        diag.transient(self)
+
+        # --- 1. Taille du cœur ---
+        tk.Label(diag, text="Rayon du cœur (Rn) en cm :", 
+                 bg=self.BG_COLOR, fg="#00d2ff", font=("Segoe UI", 9, "bold")).pack(pady=(10, 0))
+        var_rn = tk.DoubleVar(value=p_ui.get("R_noyau", 12.0))
+        ttk.Spinbox(diag, from_=5.0, to=50.0, increment=2.0, textvariable=var_rn, width=12).pack()
+
+        # --- 2. Barres de contrôle (Anti-explosion) ---
+        tk.Label(diag, text="Couronnes de contrôle (CR Rings) :", 
+                 bg=self.BG_COLOR, fg="#ff4500", font=("Segoe UI", 9, "bold")).pack(pady=(10, 0))
+        # On propose 2 couronnes par défaut pour plus de sécurité
+        var_cr_rings = tk.IntVar(value=max(2, p_ui.get("cr_rings", 2))) 
+        ttk.Spinbox(diag, from_=1, to=10, increment=1, textvariable=var_cr_rings, width=12).pack()
+
+        tk.Label(diag, text="Densité des barres (0.0 à 1.0) :", 
+                 bg=self.BG_COLOR, fg="#ff4500", font=("Segoe UI", 9, "bold")).pack(pady=(5, 0))
+        # On met 1.0 (100%) par défaut pour maximiser l'absorption
+        var_cr_density = tk.DoubleVar(value=1.0) 
+        ttk.Spinbox(diag, from_=0.1, to=1.0, increment=0.1, textvariable=var_cr_density, width=12).pack()
+
+        # --- 3. Paramètres du Réflecteur ---
+        tk.Label(diag, text="Épaisseur MAX du réflecteur (cm) :", 
+                 bg=self.BG_COLOR, fg="#2ca02c", font=("Segoe UI", 9, "bold")).pack(pady=(10, 0))
+        var_max_ep = tk.DoubleVar(value=16.0)
+        ttk.Spinbox(diag, from_=4.0, to=40.0, increment=4.0, textvariable=var_max_ep, width=12).pack()
+
+        tk.Label(diag, text="(Générera 5 points de test progressifs)", 
+                 bg=self.BG_COLOR, fg="#888888", font=("Segoe UI", 8, "italic")).pack(pady=2)
+
+        def launch():
+            # On met à jour p_ui avec les valeurs saisies dans la pop-up
+            p_ui.update({
+                "R_noyau": var_rn.get(),
+                "cr_rings": var_cr_rings.get(),
+                "cr_density": var_cr_density.get(),
+                "max_epaisseur": var_max_ep.get(),
+                "mat_mod": self.var_mat_mod.get(),
+                "mat_ref": self.var_mat_ref.get(),
+                "mat_cr": self.var_mat_cr.get(),
+                "mat_fuel": self.var_mat_fuel.get()
+            })
+            diag.destroy()
+            self._execute_case_3_worker(p_ui)
+
+        ttk.Button(diag, text="🚀 Lancer l'Optimisation", command=launch, style="Success.TButton").pack(pady=15)
+
+    def _execute_case_3_worker(self, params):
+        top = tk.Toplevel(self)
+        top.title("Calcul en cours...")
+        top.geometry("400x120")
+        top.configure(bg=self.BG_COLOR)
+        top.attributes("-topmost", True)
+        
+        # Sécurité : empêcher la fermeture manuelle de la fenêtre
+        top.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        lbl = tk.Label(top, text="Génération et calculs de diffusion...", bg=self.BG_COLOR, fg=self.FG_COLOR)
+        lbl.pack(pady=15)
+        
+        top.pv = tk.DoubleVar()
+        pb = ttk.Progressbar(top, variable=top.pv, maximum=100)
+        pb.pack(fill="x", padx=20)
+
+        # Import du script refactorisé
+        from cases.case3_optimisationReflecteur import run_reflector_optimization
+
+        def update_ui(c, t, m):
+            try:
+                if top.winfo_exists():
+                    top.pv.set((c/t)*100)
+                    lbl.config(text=m)
+            except tk.TclError:
+                pass
+
+        def cb(c, t, m):
+            self.after(0, update_ui, c, t, m)
+
+        def worker():
+            try:
+                # Exécution du Cas 3 en tâche de fond
+                epaisseurs, fq_values = run_reflector_optimization(params, cb)
+                
+                # Délégation de l'affichage au main thread Tkinter
+                self.after(0, self._plot_case_3_results, epaisseurs, fq_values, params["R_noyau"], top)
+                
+            except Exception as e:
+                logger.error(f"Erreur thread (Cas 3): {e}", exc_info=True)
+                self.after(0, lambda: messagebox.showerror("Erreur de Calcul", str(e)) if top.winfo_exists() else None)
+                self.after(0, top.destroy)
+
+        thread = threading.Thread(target=worker)
+        thread.daemon = True
+        thread.start()
+
+    def _plot_case_3_results(self, epaisseurs, fq_values, r_noyau, top_window):
+        try:
+            if top_window.winfo_exists():
+                top_window.destroy()
+        except tk.TclError:
+            pass
+
+        # Recherche de l'optimum (Fq le plus petit)
+        valid_indices = [i for i, fq in enumerate(fq_values) if fq != float('inf')]
+        if not valid_indices:
+            messagebox.showerror("Échec", "Aucun calcul n'a convergé.")
+            return
+
+        best_idx = min(valid_indices, key=lambda i: fq_values[i])
+        best_ep = epaisseurs[best_idx]
+        best_fq = fq_values[best_idx]
+
+        plt.close("Cas 3 - Optimisation Réflecteur")
+        fig, ax = plt.subplots(num="Cas 3 - Optimisation Réflecteur", figsize=(9, 6))
+        fig.patch.set_facecolor(self.BG_COLOR)
+        ax.set_facecolor(self.PANEL_BG)
+
+        ax.plot(epaisseurs, fq_values, marker='s', markersize=8, linestyle='-', linewidth=2, color="#2ca02c", label="Facteur de Forme ($F_q$)")
+
+        # Mise en évidence de l'optimum
+        ax.axvline(best_ep, color='#ffcc00', linestyle='--', linewidth=2, 
+                   label=f"Optimum calculé (~{best_ep:.1f} cm)")
+        ax.plot(best_ep, best_fq, marker='*', markersize=15, color='#ffcc00')
+
+        ax.set_xlabel("Épaisseur du réflecteur (cm)", color=self.FG_COLOR, fontweight="bold")
+        ax.set_ylabel("Facteur de Forme $F_q$ (Max/Moyen)", color=self.FG_COLOR, fontweight="bold")
+        ax.set_title(f"Cas 3 : Aplatissement du Flux (Rn = {r_noyau} cm)", color=self.FG_COLOR, fontsize=12, fontweight="bold")
+        
+        ax.tick_params(colors=self.FG_COLOR)
+        ax.grid(True, color=self.BORDER_COLOR, linestyle=":")
         ax.legend(facecolor=self.ENTRY_BG, edgecolor=self.BORDER_COLOR, labelcolor=self.FG_COLOR)
 
         plt.tight_layout()
