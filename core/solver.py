@@ -73,55 +73,78 @@ def extract_p1_fem_data(mesh):
 
 def pos_rodBar_init(mesh, conn, det, w, N, get_props_func, K, nn, user_mapping, noeuds_bords):
     """
-    Recherche algorithmique de l'insertion optimale initiale des barres de contrôle par Dichotomie
+    Recherche algorithmique de l'insertion optimale initiale des barres de contrôle par Dichotomie.
     
-    Cette fonction permet d'aider le controleur PD et ne pas trop osciller pour atteindre la position
-    de stationnarité
+    Cette fonction permet d'aider le contrôleur PD à démarrer proche de l'équilibre 
+    pour éviter de trop fortes oscillations initiales (transitoire violent).
     """
     logger.info("Recherche du point d'équilibre initial des barres de contrôle")
     
+    # --- 1. IDENTIFICATION DES DEGRÉS DE LIBERTÉ (DOFs) ---
+    # On isole les nœuds internes (libres) en excluant les frontières de Dirichlet
     mask = np.ones(nn, dtype=bool)
     mask[noeuds_bords] = False
     free_dofs = np.nonzero(mask)[0]
     
+    # Extraction de la sous-matrice de rigidité (fuites) pour les nœuds libres
     K_FF = K[free_dofs, :][:, free_dofs]
     
-    # Théoriquement, la criticité absolue s'obtient en cherchant la plus grande 
-    # valeur propre de la matrice (R - K). Cependant, résoudre eigsh() (qui cherche les valeurs propres) 
-    # prend plusieurs secondes par itération
-    # Ici, on utilise une approximation physique instantanée : on injecte un flux plat
-    # et on analyse le signe de la dérivée temporelle (variation_flux). 
-    # C'est une multiplication Matrice-Vecteur (O(n)), des milliers de fois plus rapide.
-    phi_test = np.ones(len(free_dofs))
+    # --- 2. APPROXIMATION DU FLUX FONDAMENTAL ---
+    # L'utilisation d'un flux plat génère des fuites artificielles infinies aux bords.
+    # On le remplace par un profil parabolique (proche du mode fondamental de Bessel J0 pour un cylindre), 
+    # maximal au centre et s'annulant aux frontières du réacteur.
     
+    # Récupération des coordonnées spatiales (X, Y) des nœuds libres
+    pts_free = mesh.points[free_dofs]
+    x = pts_free[:, 0]
+    y = pts_free[:, 1]
+    
+    # Calcul de la distance radiale au carré : r^2 = x^2 + y^2
+    r_carre = x**2 + y**2
+    R_max_carre = np.max(r_carre)
+    
+    # Génération du profil parabolique : 1.0 au centre (0,0) et tend vers 0.0 au bord (R_max)
+    phi_test = 1.0 - (r_carre / R_max_carre)
+    
+    # Sécurité numérique : on évite d'avoir des zéros parfaits pour ne pas fausser l'évaluation matricielle
+    phi_test = np.maximum(phi_test, 1e-6)
+    
+    # --- 3. RECHERCHE PAR DICHOTOMIE ---
+    # Bornes de recherche de la position de la barre (0.0 = totalement retirée, 1.0 = totalement insérée)
     pos_min = 0.0  
     pos_max = 1.0  
     pos_critique = 0.5
     
-    # 10 itérations de dichotomie garantissent une précision de 1/2^10 = ~0.001 (0.1% de la course)
+    # 10 itérations garantissent une précision de 1/2^10 = ~0.001 (0.1% de la course totale)
     for i in range(10): 
         pos_critique = (pos_min + pos_max) / 2.0
         
+        # Récupération des sections efficaces mises à jour pour la position actuelle
         _, c_Sigma_a, c_nuSigma_f, _ = get_props_func(
             mesh, conn, rod_insertion=pos_critique, user_mapping=user_mapping
         )
+        
+        # La composante locale de réaction correspond à la création (nu*Sigma_f) moins l'absorption (Sigma_a)
         c_R = c_nuSigma_f - c_Sigma_a
         
+        # Assemblage de la matrice de réaction globale, puis réduction aux DOFs libres
         R = assemble_mass_or_reaction(nn, len(conn), 3, len(w), conn, det, w, N, c_R)
         R_FF = R[free_dofs, :][:, free_dofs]
         
-        # Matrice d'évolution A = Création (R) - Pertes (K)
+        # Matrice d'évolution A = Opérateur de Réaction (R) - Opérateur de Fuite/Diffusion (K)
         A_FF = R_FF - K_FF
         
-        # Évaluation instantanée du bilan neutronique local
+        # Évaluation instantanée du bilan neutronique spatial
+        # On multiplie la matrice d'évolution par notre flux spatial de test parabolique
         variation_flux = A_FF.dot(phi_test)
         bilan_neutronique = np.sum(variation_flux)
         
+        # Ajustement des bornes selon le signe de l'évolution du flux
         if bilan_neutronique > 0:
-            # Sur-critique : on doit rentrer les barres de contrôle (augmenter pos_min)
+            # Sur-critique (la puissance monte) : on doit insérer de l'absorbant (augmenter pos_min)
             pos_min = pos_critique
         else:
-            # Sous-critique : on doit retirer les barres de contrôle (diminuer pos_max)
+            # Sous-critique (la puissance descend) : on doit retirer de l'absorbant (diminuer pos_max)
             pos_max = pos_critique
 
     logger.info(f"Position d'équilibre trouvée : {pos_critique:.3f}")
