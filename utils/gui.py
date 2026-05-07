@@ -455,6 +455,13 @@ class ReactorGUI(tk.Tk):
             command=self.action_run_case_2,
             style="Accent.TButton",
         ).pack(pady=(5, 0))
+        ttk.Button(
+            btn_container,
+            text="✅ Cas 3 : Validation Théorique (V&V)",
+            width=btn_width,
+            command=self.action_run_case_3,
+            style="Accent.TButton",
+        ).pack(pady=(5, 0))
 
     def get_current_params(self):
         try:
@@ -961,99 +968,58 @@ class ReactorGUI(tk.Tk):
         plt.show()
 
     def action_run_case_2(self):
+        """Ouvre le dialogue de configuration pour la Heatmap d'Overshoot."""
         p_ui = self.get_current_params()
-        if not p_ui:
-            return
+        if not p_ui: return
 
         diag = tk.Toplevel(self)
-        diag.title("Cas 2 : Cartographie Overshoot")
+        diag.title("Cas 2 : Configuration Heatmap")
         diag.geometry("450x350")
         diag.configure(bg=self.BG_COLOR)
         diag.transient(self)
         diag.grab_set()
 
-        tk.Label(
-            diag,
-            text="Cartographie Spatiale de l'Overshoot",
-            bg=self.BG_COLOR,
-            fg="#00d2ff",
-            font=("Segoe UI", 12, "bold"),
-        ).pack(pady=15)
+        tk.Label(diag, text="Optimisation Spatiale de l'Overshoot", 
+                 bg=self.BG_COLOR, fg="#00d2ff", font=("Segoe UI", 12, "bold")).pack(pady=15)
 
-        confirm_frame = tk.LabelFrame(
-            diag,
-            text="Matériaux sélectionnés",
-            bg=self.PANEL_BG,
-            fg=self.FG_COLOR,
-            padx=10,
-            pady=10,
-        )
+        confirm_frame = tk.LabelFrame(diag, text="Matériaux", bg=self.PANEL_BG, fg=self.FG_COLOR, padx=10, pady=10)
         confirm_frame.pack(fill="x", padx=30, pady=10)
-
-        tk.Label(
-            confirm_frame,
-            text=f"• Combustible : {self.var_mat_fuel.get()}",
-            bg=self.PANEL_BG,
-            fg=self.FG_COLOR,
-        ).pack(anchor="w")
-        tk.Label(
-            confirm_frame,
-            text=f"• Modérateur : {self.var_mat_mod.get()}",
-            bg=self.PANEL_BG,
-            fg=self.FG_COLOR,
-        ).pack(anchor="w")
+        
+        tk.Label(confirm_frame, text=f"• Combustible : {self.var_mat_fuel.get()}", bg=self.PANEL_BG, fg=self.FG_COLOR).pack(anchor="w")
+        tk.Label(confirm_frame, text=f"• Modérateur : {self.var_mat_mod.get()}", bg=self.PANEL_BG, fg=self.FG_COLOR).pack(anchor="w")
 
         input_frame = tk.Frame(diag, bg=self.BG_COLOR)
         input_frame.pack(pady=10)
-
-        tk.Label(
-            input_frame,
-            text="Épaisseur max réflecteur (cm) :",
-            bg=self.BG_COLOR,
-            fg=self.FG_COLOR,
-        ).grid(row=0, column=0, padx=5, pady=5)
+        
+        tk.Label(input_frame, text="Épaisseur max réflecteur (cm) :", bg=self.BG_COLOR, fg=self.FG_COLOR).grid(row=0, column=0, padx=5, pady=5)
         var_max_thick = tk.DoubleVar(value=12.0)
-        ttk.Entry(input_frame, textvariable=var_max_thick, width=10).grid(
-            row=0, column=1, pady=5
-        )
+        ttk.Entry(input_frame, textvariable=var_max_thick, width=10).grid(row=0, column=1, pady=5)
 
         def launch():
             params = p_ui.copy()
-            params.update(
-                {
-                    "max_thickness": var_max_thick.get(),
-                    "mat_fuel": self.var_mat_fuel.get(),
-                    "mat_mod": self.var_mat_mod.get(),
-                    "mat_ref": self.var_mat_ref.get(),
-                    "mat_cr": self.var_mat_cr.get(),
-                }
-            )
+            params.update({
+                "max_thickness": var_max_thick.get(),
+                "mat_fuel": self.var_mat_fuel.get(),
+                "mat_mod": self.var_mat_mod.get(),
+                "mat_ref": self.var_mat_ref.get(),
+                "mat_cr": self.var_mat_cr.get()
+            })
             diag.destroy()
             self._execute_case_2_worker(params)
 
-        ttk.Button(
-            diag,
-            text="🚀 Lancer la cartographie",
-            command=launch,
-            style="Accent.TButton",
-        ).pack(pady=10)
-
+        ttk.Button(diag, text="🚀 Générer la Heatmap", command=launch, style="Accent.TButton").pack(pady=10)
     def _execute_case_2_worker(self, params):
+        """Gère l'exécution asynchrone et le déballage des 3 variables de la Heatmap."""
         top = tk.Toplevel(self)
-        top.title("Analyse en cours...")
+        top.title("Calcul de la Heatmap...")
         top.geometry("450x150")
         top.configure(bg=self.BG_COLOR)
         top.attributes("-topmost", True)
         top.protocol("WM_DELETE_WINDOW", lambda: None)
 
-        lbl = tk.Label(
-            top,
-            text="Génération des maillages et calculs...",
-            bg=self.BG_COLOR,
-            fg=self.FG_COLOR,
-        )
+        lbl = tk.Label(top, text="Analyse matricielle en cours...", bg=self.BG_COLOR, fg=self.FG_COLOR)
         lbl.pack(pady=20)
-
+        
         progress_var = tk.DoubleVar()
         pb = ttk.Progressbar(top, variable=progress_var, maximum=100)
         pb.pack(fill="x", padx=40)
@@ -1065,100 +1031,141 @@ class ReactorGUI(tk.Tk):
                 if top.winfo_exists():
                     progress_var.set((current / total) * 100)
                     lbl.config(text=msg)
-            except tk.TclError:
-                pass
+            except tk.TclError: pass
 
         def worker():
             try:
+                # Déballage des 3 variables attendues
                 thicknesses, target_rings, matrix = run_overshoot_analysis(
-                    params,
-                    progress_callback=lambda c, t, m: self.after(0, update_ui, c, t, m),
+                    params, 
+                    progress_callback=lambda c, t, m: self.after(0, update_ui, c, t, m)
                 )
-                self.after(
-                    0,
-                    lambda: (
-                        top.destroy(),
-                        self.plot_overshoot_heatmap(thicknesses, target_rings, matrix),
-                    ),
-                )
+                
+                self.after(0, lambda: (top.destroy(), self.plot_overshoot_heatmap(thicknesses, target_rings, matrix)))
+                
             except Exception as e:
-                logger.error(f"Erreur lors du Cas 2 : {e}", exc_info=True)
-                self.after(
-                    0,
-                    lambda: (
-                        messagebox.showerror("Erreur de calcul", str(e)),
-                        top.destroy(),
-                    ),
-                )
+                logger.error(f"Erreur Cas 2 : {e}", exc_info=True)
+                err_txt = str(e)
+                self.after(0, lambda m=err_txt: (messagebox.showerror("Erreur", m), top.destroy()))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def plot_overshoot_heatmap(self, thicknesses, target_rings, overshoot_matrix):
-        plt.close("Cas 2 - Cartographie Overshoot")
-        fig, ax = plt.subplots(num="Cas 2 - Cartographie Overshoot", figsize=(10, 7))
+        """Affiche la carte thermique 2D de l'overshoot."""
+        plt.close("Cas 2 - Heatmap Overshoot")
+        fig, ax = plt.subplots(num="Cas 2 - Heatmap Overshoot", figsize=(10, 7))
         fig.patch.set_facecolor(self.BG_COLOR)
         ax.set_facecolor(self.PANEL_BG)
 
+        # Création de la grille pour le tracé
         X, Y = np.meshgrid(target_rings, thicknesses)
-        cp = ax.contourf(X, Y, overshoot_matrix, levels=20, cmap="magma")
-
+        
+        # Tracé des contours remplis (Heatmap)
+        cp = ax.contourf(X, Y, overshoot_matrix, levels=20, cmap='magma')
+        
+        # Barre d'échelle
         cbar = fig.colorbar(cp, ax=ax)
-        cbar.set_label("Overshoot (%)", color=self.FG_COLOR, fontweight="bold")
+        cbar.set_label('Overshoot (%)', color=self.FG_COLOR, fontweight='bold')
         cbar.ax.yaxis.set_tick_params(color=self.FG_COLOR)
         plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color=self.FG_COLOR)
 
+        # Recherche et marquage de l'optimum (valeur minimale)
         if not np.all(np.isnan(overshoot_matrix)):
-            idx = np.unravel_index(
-                np.nanargmin(overshoot_matrix), overshoot_matrix.shape
-            )
+            idx = np.unravel_index(np.nanargmin(overshoot_matrix), overshoot_matrix.shape)
             opt_t, opt_r = thicknesses[idx[0]], target_rings[idx[1]]
+            
+            ax.scatter(opt_r, opt_t, color='#00ff00', marker='*', s=250, 
+                       edgecolor='white', label='Optimum Physique', zorder=5)
+            
+            ax.annotate(f"Idéal: {overshoot_matrix[idx]:.1f}%", 
+                        (opt_r, opt_t), xytext=(15, 15), 
+                        textcoords='offset points', color='#00ff00', fontweight='bold',
+                        arrowprops=dict(arrowstyle="->", color="#00ff00"))
 
-            ax.scatter(
-                opt_r,
-                opt_t,
-                color="#00ff00",
-                marker="*",
-                s=200,
-                edgecolor="white",
-                label="Optimum global",
-                zorder=5,
-            )
-            ax.annotate(
-                f"Idéal: {overshoot_matrix[idx]:.1f}%",
-                (opt_r, opt_t),
-                xytext=(10, 10),
-                textcoords="offset points",
-                color="#00ff00",
-                fontweight="bold",
-                arrowprops=dict(arrowstyle="->", color="#00ff00"),
-            )
-
-        ax.set_xlabel(
-            "Indice de la couronne CR (1=Centre, N=Bord)",
-            color=self.FG_COLOR,
-            fontweight="bold",
-        )
-        ax.set_ylabel(
-            "Épaisseur du réflecteur (cm)", color=self.FG_COLOR, fontweight="bold"
-        )
-        ax.set_title(
-            "Influence Spatiale des Barres vs Réflecteur",
-            color=self.FG_COLOR,
-            fontsize=12,
-            fontweight="bold",
-            pad=20,
-        )
+        # Cosmétique scientifique
+        ax.set_xlabel("Position radiale de l'anneau (Indice)", color=self.FG_COLOR, fontweight="bold")
+        ax.set_ylabel("Épaisseur du réflecteur (cm)", color=self.FG_COLOR, fontweight="bold")
+        ax.set_title("Optimisation Spatiale du Pilotage (Overshoot)", 
+                     color=self.FG_COLOR, fontsize=12, fontweight="bold", pad=20)
+        
         ax.set_xticks(target_rings)
         ax.tick_params(colors=self.FG_COLOR)
-        ax.legend(
-            facecolor=self.PANEL_BG,
-            edgecolor=self.BORDER_COLOR,
-            labelcolor=self.FG_COLOR,
-        )
-
+        ax.grid(True, linestyle=':', alpha=0.3)
+        ax.legend(facecolor=self.PANEL_BG, edgecolor=self.BORDER_COLOR, labelcolor=self.FG_COLOR)
+        
         plt.tight_layout()
         plt.show()
 
+    def action_run_case_3(self):
+        """Lance l'étude de validation théorique (V&V)."""
+        p_ui = self.get_current_params()
+        if not p_ui: return
+
+        top = tk.Toplevel(self)
+        top.title("Analyse V&V en cours")
+        top.geometry("400x150")
+        top.configure(bg=self.BG_COLOR)
+        
+        lbl = tk.Label(top, text="Calcul des estimateurs...", bg=self.BG_COLOR, fg=self.FG_COLOR)
+        lbl.pack(pady=20)
+        
+        progress = ttk.Progressbar(top, length=300, mode='determinate')
+        progress.pack(pady=10)
+
+        from cases.case3_validation import run_validation_test
+
+        def worker():
+            try:
+                # Récupération des résultats synchronisés
+                res = run_validation_test(
+                    p_ui, 
+                    progress_callback=lambda c, t, m: self.after(0, lambda: (progress.configure(value=c), lbl.configure(text=m)))
+                )
+                self.after(0, lambda: (top.destroy(), self._plot_case_3(*res)))
+            except Exception as e:
+                logger.error(f"Erreur Cas 3: {e}", exc_info=True)
+                self.after(0, lambda: messagebox.showerror("Erreur", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _plot_case_3(self, times, num_max, theo_bound, num_min, pop_totale):
+        """Affiche les graphiques de validation."""
+        plt.close("Cas 3 - Validation Théorique")
+        fig, axes = plt.subplots(3, 1, figsize=(10, 11), num="Cas 3 - Validation Théorique")
+        fig.patch.set_facecolor(self.BG_COLOR)
+        
+        # 1. Population (Conservation)
+        axes[0].set_facecolor(self.PANEL_BG)
+        axes[0].plot(times, pop_totale, color="#00d2ff", lw=2, label=r"$\Phi(t) = \int_{\Omega} \phi d\Omega$")
+        axes[0].set_title("1. Évolution de la Population Neutronique Totale", color="white", fontweight="bold")
+        axes[0].grid(True, alpha=0.2)
+        axes[0].legend()
+
+        # 2. Borne Supérieure (Growth Estimate) - Échelle LOG
+        axes[1].set_facecolor(self.PANEL_BG)
+        axes[1].plot(times, num_max, color="blue", lw=2, label=r"Max($\phi$) numérique")
+        axes[1].plot(times, theo_bound, color="red", ls="--", lw=2, label=r"Borne $e^{vCt} \|\phi_0\|_{\infty}$")
+        axes[1].set_yscale("log")
+        axes[1].set_title("2. Vérification de la Borne Supérieure", color="white", fontweight="bold")
+        axes[1].grid(True, which="both", alpha=0.1)
+        axes[1].legend()
+
+        # 3. Positivité (Weak Maximum Principle)
+        axes[2].set_facecolor(self.PANEL_BG)
+        axes[2].plot(times, num_min, color="green", lw=2, label=r"Min($\phi$) numérique")
+        axes[2].axhline(0, color="red", ls=":", lw=2, label="Zéro physique")
+        axes[2].set_title("3. Préservation de la Positivité", color="white", fontweight="bold")
+        axes[2].set_xlabel("Temps (s)", color="white")
+        axes[2].grid(True, alpha=0.2)
+        axes[2].legend()
+
+        for ax in axes:
+            ax.tick_params(colors="white")
+            ax.xaxis.label.set_color("white")
+            ax.yaxis.label.set_color("white")
+
+        plt.tight_layout(pad=3.0)
+        plt.show()
 
 if __name__ == "__main__":
     app = ReactorGUI()
