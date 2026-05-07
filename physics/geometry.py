@@ -259,7 +259,7 @@ class ReactorGeometry:
         )
 
     def get_tagged_assemblies(self, n_cr_rings=1, cr_density=0.5):
-        """Assigne les tags (FUEL/CR) via masquage booléen intégral."""
+        """Assigne les tags (FUEL/CR) via masquage booléen intégral avec distribution uniforme."""
         centers = self.hex_centers()
         if centers.size == 0:
             return centers, np.array([]), np.array([])
@@ -267,53 +267,52 @@ class ReactorGeometry:
         X, Y = centers[:, 0], centers[:, 1]
 
         # 1. Transformation géométrique inverse (Cartésien -> Indices spatiaux).
-        # On recalcule les indices (A, B) à partir des positions physiques (X, Y).
-        # Cela permet d'analyser la structure du cœur sans dépendre de la grille initiale.
         B = np.round(Y / (1.5 * self.R_hex))
         A = np.round(X / (self.R_hex * np.sqrt(3)) - B / 2)
 
         # 2. Distance de Manhattan hexagonale.
-        # Calcule le "rang" (la distance discrète) de chaque hexagone par rapport
-        # à l'assemblage central (0,0). Le centre est au rang 0, les voisins au rang 1, etc.
         d_hex = np.maximum.reduce([np.abs(A), np.abs(B), np.abs(A + B)]).astype(int)
 
         # Préparation du tri spatial pour la distribution des barres de contrôle (CR).
         angles = np.arctan2(Y, X)
         D_max = np.max(d_hex) if d_hex.size > 0 else 0
 
-        # Initialisation : on considère que tout le cœur est du combustible par défaut.
+        # Initialisation : tout le cœur est du combustible par défaut.
         tags = np.full(len(centers), "FUEL", dtype=object)
 
         # 3. Placement vectorisé des barres de contrôle (Control Rods).
         if n_cr_rings > 0 and D_max > 0:
-            # On détermine sur quels anneaux placer les barres.
             # Espacement régulier : on divise le rayon total en fractions.
             step = D_max / (n_cr_rings + 1)
             target_rings = np.round(step * np.arange(1, n_cr_rings + 1)).astype(int)
 
             for target_d in target_rings:
-                # Masquage : on isole les index des assemblages situés sur l'anneau cible.
+                # Masquage : on isole les assemblages de l'anneau cible.
                 indices = np.where(d_hex == target_d)[0]
                 if indices.size == 0:
                     continue
 
-                # Tri angulaire.
-                # Essentiel pour répartir les barres de manière symétrique autour du centre.
-                # On ordonne les indices selon leur position angulaire (de -pi à pi).
+                # Tri angulaire pour une répartition circulaire symétrique
                 sorted_indices = indices[np.argsort(angles[indices])]
 
-                # Application de la densité.
+                # Application de la densité avec algorithme de distribution uniforme exacte
                 if cr_density >= 1.0:
-                    # Remplacement total : tout l'anneau devient un anneau de barres.
                     tags[sorted_indices] = "CR"
-                elif cr_density > 0:
-                    # Échantillonnage fractionné (Slicing avancé).
-                    # On calcule l'écart (jump) pour obtenir la proportion désirée.
-                    # Exemple : cr_density=0.33 -> jump=3 -> 1 barre tous les 3 assemblages.
-                    jump = int(np.round(1.0 / cr_density))
-                    tags[sorted_indices[::jump]] = "CR"
+                elif cr_density > 0.0:
+                    N_total = len(sorted_indices)
+                    # Calcul du nombre exact de barres à placer
+                    M_bars = int(np.round(N_total * cr_density))
 
-        # On retourne les centres, leurs matériaux assignés, et la matrice des rangs.
+                    if M_bars > 0:
+                        # Génère M indices répartis équitablement de 0 à N-1.
+                        # La multiplication par (N/M) garantit la meilleure symétrie circulaire
+                        # pour n'importe quelle fraction (ex: 2/3, 3/4, 5/8...)
+                        idx_to_pick = np.floor(
+                            np.arange(M_bars) * (N_total / M_bars)
+                        ).astype(int)
+
+                        tags[sorted_indices[idx_to_pick]] = "CR"
+
         return centers, tags, d_hex
 
 
