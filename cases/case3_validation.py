@@ -12,6 +12,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
 def run_validation_test(params, progress_callback=None):
     """
     Exécute le test de validation V&V (Verification & Validation).
@@ -20,7 +21,7 @@ def run_validation_test(params, progress_callback=None):
     R_noyau = params.get("R_noyau", 16.0)
     R_hex = params.get("R_hex", 2.0)
     thick = params.get("epaisseur_reflec", 4.0)
-    
+
     if progress_callback:
         progress_callback(10, 100, "Génération du maillage de test...")
 
@@ -29,7 +30,7 @@ def run_validation_test(params, progress_callback=None):
     m_params = {
         "R_hex": R_hex,
         "R_reflec": R_noyau + thick,
-        "cr_rings": params.get("cr_rings", 0), # Souvent testé sans barres pour la pureté
+        "cr_rings": params.get("cr_rings", 0),
         "cr_density": params.get("cr_density", 0.0),
         "pins_fuel": params.get("pins_fuel", 4),
         "pins_cr": params.get("pins_cr", 3),
@@ -57,25 +58,36 @@ def run_validation_test(params, progress_callback=None):
         }
 
         # 3. Assemblage des matrices physiques
-        D, Sa, nSf, inv_v = get_material_properties(mesh, conn, rod_insertion=0.5, user_mapping=user_map)
-        
+        D, Sa, nSf, inv_v = get_material_properties(
+            mesh, conn, rod_insertion=0.5, user_mapping=user_map
+        )
+
         M = assemble_mass_or_reaction(nn, len(conn), 3, len(w), conn, det, w, N, inv_v)
         K = assemble_stiffness(nn, len(conn), 3, len(w), conn, det, w, jacs, gradN, D)
-        R_mat = assemble_mass_or_reaction(nn, len(conn), 3, len(w), conn, det, w, N, nSf - Sa)
+        R_mat = assemble_mass_or_reaction(
+            nn, len(conn), 3, len(w), conn, det, w, N, nSf - Sa
+        )
 
         # 4. Intégration Temporelle (Schéma Theta)
         phi_0 = np.ones(nn) * 10.0
-        phi_0[nodes_bc] = 0.0 # Respect Dirichlet initialement
-        
+        phi_0[nodes_bc] = 0.0  # Respect Dirichlet initialement
+
         integrateur = TimeIntegrator(M, K, R_mat, nodes_bc, theta=0.5)
-        
+
         if progress_callback:
             progress_callback(40, 100, "Résolution temporelle...")
 
         times, solutions, _ = integrateur.integrate(
-            phi_0, t_span=(0.0, 5.0), n_steps=100,
-            mesh=mesh, elem_tags=conn, det=det, w=w, N=N,
-            get_props_func=get_material_properties, user_mapping=user_map
+            phi_0,
+            t_span=(0.0, 5.0),
+            n_steps=100,
+            mesh=mesh,
+            elem_tags=conn,
+            det=det,
+            w=w,
+            N=N,
+            get_props_func=get_material_properties,
+            user_mapping=user_map,
         )
 
         # 5. Post-traitement et Calcul des indicateurs
@@ -84,13 +96,13 @@ def run_validation_test(params, progress_callback=None):
 
         # Synchronisation de l'axe temporel (l'intégrateur saute 1 frame sur 2)
         saved_times = np.linspace(times[0], times[-1], len(solutions))
-        
-        areas = np.sum(det * w, axis=1) # Aire de chaque triangle
-        
+
+        areas = np.sum(det * w, axis=1)  # Aire de chaque triangle
+
         pop_totale = []
         num_max = []
         num_min = []
-        
+
         # Constante de croissance théorique C = max(v * (nuSf - Sa))
         v_local = 1.0 / inv_v
         C_eff = np.max(v_local * (nSf - Sa))
@@ -101,7 +113,7 @@ def run_validation_test(params, progress_callback=None):
             # Population : intégrale spatiale P1
             phi_e = np.mean(sol[conn], axis=1)
             pop_totale.append(np.sum(areas * phi_e))
-            
+
             # Extremums pour les principes du maximum
             num_max.append(np.max(sol))
             num_min.append(np.min(sol))

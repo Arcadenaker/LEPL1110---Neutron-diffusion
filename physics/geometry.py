@@ -20,16 +20,12 @@ import matplotlib.path as mpath
 import matplotlib.patches as mpatches
 import gmsh
 
-# --- IMPORT DU LOGGER ---
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-# ------------------------
 
 
-# ==============================================================================
 # 1. MOTEUR MATHÉMATIQUE ET TOPOLOGIQUE (NumPy vectorisé)
-# ==============================================================================
 class ReactorGeometry:
     def __init__(self, R_n, R_hex, form="circle"):
         self.form = form
@@ -316,9 +312,7 @@ class ReactorGeometry:
         return centers, tags, d_hex
 
 
-# ==============================================================================
 # 2. GÉNÉRATEUR DE MAILLAGE GMSH (Noyau OpenCASCADE)
-# ==============================================================================
 class ReactorMeshGenerator:
     def __init__(self, geometry: ReactorGeometry, params: dict):
         self.geom = geometry
