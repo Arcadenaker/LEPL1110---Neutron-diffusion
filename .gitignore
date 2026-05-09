@@ -28,7 +28,6 @@ animations_sauvegardes/
 *.npy
 *.npz
 *.csv
-*.txt
 
 # --- Système ---
 .DS_Store

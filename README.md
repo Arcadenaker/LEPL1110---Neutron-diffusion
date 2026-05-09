@@ -42,19 +42,19 @@ L'interface graphique (`gui.py`) offre un contrôle total sur la conception et l
 * **`main.py`** : Point d'entrée pour lancer l'application.
 
 ## Installation et Lancement
+## Installation et Lancement
 
 1.  Installer les dépendances :
     ```bash
+    pip install numpy scipy numba meshio matplotlib gmsh pypardiso
     ```
-    pip install numpy scipy numba meshddio matplotlib gmsh pypardiso
-    ```
-    ```
+
 2.  Lancer le simulateur :
     ```bash
     python main.py
     ```
 
-## 🔬 Modélisation Mathématique
+## Modélisation Mathématique
 Le simulateur résout l'équation de diffusion neutronique :
 $$\frac{1}{v} \frac{\partial \phi}{\partial t} - \nabla \cdot (D \nabla \phi) + \Sigma_a \phi = \nu \Sigma_f \phi$$
 La résolution utilise un schéma de discrétisation temporelle de type **Theta-méthode** (Crank-Nicolson) et une factorisation LU via **Pypardiso** pour une performance maximale.
