@@ -374,7 +374,9 @@ def run_full_simulation(
         logger.info(
             "Mode Headless détecté. Calcul de la puissance et sauvegarde CSV..."
         )
-        puissance_history = [np.sum(sol) for sol in solutions]
+        
+        # CORRECTION : Application de FACTEUR_MW pour unifier les sorties
+        puissance_history = [np.sum(sol) * FACTEUR_MW for sol in solutions]
 
         if save_csv:
             try:

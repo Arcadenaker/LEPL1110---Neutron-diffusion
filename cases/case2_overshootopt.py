@@ -11,9 +11,10 @@ logger = get_logger(__name__)
 
 def run_overshoot_analysis(params, progress_callback=None):
     """
-    Analyse spatiale de l'overshoot du contrôleur PD.
-    Cartographie l'influence de l'épaisseur du réflecteur face à la position radiale
-    d'un unique anneau de contrôle (du centre vers la périphérie).
+    Analyse spatiale de la qualité du pilotage (Contrôleur PD).
+    Remplace le simple calcul d'overshoot par l'Erreur Quadratique Moyenne (RMSE)
+    sur le régime établi, afin de pénaliser à la fois les instabilités transitoires
+    et l'incapacité physique du système à atteindre la consigne.
     """
     R_noyau = params.get("R_noyau", 12.0)
     R_hex = params.get("R_hex", 2.0)
@@ -37,10 +38,11 @@ def run_overshoot_analysis(params, progress_callback=None):
 
     # --- 2. DÉFINITION DES AXES D'ÉTUDE ---
     max_thick = params.get("max_thickness", 12.0)
-    thicknesses = np.arange(2.0, max_thick + 0.1, 2.0)  # Épaisseurs : 2.0, 4.0, 6.0...
-    target_rings = np.arange(1, D_max + 1)  # Anneaux : de 1 (centre) à D_max (bord)
+    thicknesses = np.arange(2.0, max_thick + 0.1, 2.0)
+    target_rings = np.arange(1, D_max + 1)
 
-    overshoot_matrix = np.zeros((len(thicknesses), len(target_rings)))
+    # Matrice des scores (précédemment overshoot_matrix)
+    score_matrix = np.zeros((len(thicknesses), len(target_rings)))
 
     total_steps = len(thicknesses) * len(target_rings)
     current_step = 0
@@ -65,8 +67,7 @@ def run_overshoot_analysis(params, progress_callback=None):
 
             geom = ReactorGeometry(R_n=R_noyau, R_hex=R_hex)
 
-            # --- SURCHARGE LOCALE DE LA GÉOMÉTRIE ---
-            # On force la valeur de `ring_idx` dans les paramètres par défaut pour éviter les effets de closure
+            # Surcharge locale de la topologie
             def custom_tagged_assemblies(n_cr_rings=1, cr_density=1.0, r_idx=ring_idx):
                 centers = geom.hex_centers()
                 B_c = np.round(centers[:, 1] / (1.5 * R_hex))
@@ -76,11 +77,8 @@ def run_overshoot_analysis(params, progress_callback=None):
                 ).astype(int)
 
                 tags = np.full(len(centers), "FUEL", dtype=object)
-
-                # Assigne 100% de barres 'CR' UNIQUEMENT sur l'anneau ciblé
                 mask_cr = d == r_idx
                 tags[mask_cr] = "CR"
-
                 return centers, tags, d
 
             geom.get_tagged_assemblies = custom_tagged_assemblies
@@ -98,32 +96,40 @@ def run_overshoot_analysis(params, progress_callback=None):
             generator = ReactorMeshGenerator(geom, m_params)
 
             try:
-                # Génération du maillage et exécution Headless
                 generator.generate(mesh_path)
                 solutions, times, puissance_history = run_full_simulation(
                     mesh_path, user_mapping=user_mapping, headless=True
                 )
 
-                # --- 4. CALCUL DE L'OVERSHOOT ---
-                p_cible = np.mean(puissance_history[-10:])
-                p_max = np.max(puissance_history)
-
-                if p_cible > 0:
-                    overshoot = ((p_max - p_cible) / p_cible) * 100.0
-                    overshoot_matrix[i, j] = max(0.0, overshoot)
+                # --- 4. ÉVALUATION DE LA PERFORMANCE (MÉTRIQUE RMSE) ---
+                if len(puissance_history) > 10:
+                    p_initiale = puissance_history[0]
+                    p_cible = p_initiale * 1.5 
+                    
+                    # On isole la seconde moitié de la simulation (régime censé être établi)
+                    idx_demi = len(puissance_history) // 2
+                    p_regime_etabli = np.array(puissance_history[idx_demi:])
+                    
+                    # Calcul strict du RMSE relatif à la cible
+                    erreurs_relatives = (p_regime_etabli - p_cible) / p_cible
+                    rmse = np.sqrt(np.mean(erreurs_relatives**2)) * 100.0
+                    
+                    if np.isnan(rmse) or np.isinf(rmse):
+                        score_matrix[i, j] = 1000.0
+                    else:
+                        score_matrix[i, j] = np.clip(rmse, 0.0, 1000.0)
                 else:
-                    overshoot_matrix[i, j] = np.nan
+                    score_matrix[i, j] = np.nan
 
             except Exception as e:
                 logger.error(f"Échec {msg} : {e}", exc_info=True)
-                overshoot_matrix[i, j] = np.nan
+                score_matrix[i, j] = np.nan
 
             finally:
-                # Nettoyage des fichiers temporaires
                 if os.path.exists(mesh_path):
                     try:
                         os.remove(mesh_path)
                     except OSError:
                         pass
 
-    return thicknesses, target_rings, overshoot_matrix
+    return thicknesses, target_rings, score_matrix
