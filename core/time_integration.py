@@ -47,121 +47,99 @@ class TimeIntegrator:
         get_props_func,
         pilot_callback=None,
         user_mapping=None,
-
-        # Par défaut, on démarre avec les barres à moitié insérées (0.5)
-        # C'est une sécurité pour éviter de démarrer sur une configuration explosive (bon compromis)
         initial_rod_pos=0.5, 
     ):
         t_start, t_end = t_span
-        
-        # Le pas de temps (dt). Plus il est petit, plus la simulation est précise
-        # (mais plus le processeur devra faire de calculs)
         dt = (t_end - t_start) / n_steps
+        
         logger.info(
             f"Début de l'intégration temporelle : t=[{t_start}, {t_end}], dt={dt:.5f}, étapes={n_steps}"
         )
 
-        times = np.linspace(t_start, t_end, n_steps + 1)
-        nn = self.M.shape[0] # Nombre total de nœuds du maillage
+        # On génère le vecteur de temps complet pour le calcul interne
+        times_full = np.linspace(t_start, t_end, n_steps + 1)
+        
+        nn = self.M.shape[0]
         ne = len(elem_tags)
 
-        # On crée un filtre pour identifier les degrés de liberté libres (free_dofs)
-        # En résumé on ne calcule la physique qu'à l'intérieur du réacteur, 
-        # on ignore la frontière extérieure puisqu'on sait déjà que le flux y est nul.
+        # Filtrage des DOFs pour les conditions aux limites (Dirichlet)
         mask = np.ones(nn, dtype=bool)
         mask[self.dirichlet_dofs] = False
         free_dofs = np.nonzero(mask)[0]
 
+        # --- SYNCHRONISATION DES SORTIES ---
+        # On initialise les listes qui contiendront les résultats finaux
         solutions = [phi_0.copy()]
+        saved_times = [times_full[0]] # On garde l'instant t=0 correspondant à phi_0
+
         phi_n = phi_0.copy()
         phi_prev = phi_0.copy()
-
-        # Point de départ des barres de contrôle (controleur PD)
         current_rod_pos = initial_rod_pos 
 
-        # -- Optimisation pour la vitesse --
-        # Re-calculer les matrices de A à Z prend énormément de temps
-        # On va garder les matrices en mémoire (cache) tant que les barres de contrôle 
-        # n'ont pas bougé de façon significative.
-        last_computed_pos = -1.0  # Mis à -1 pour forcer le calcul à la première boucle
+        # -- Système de Cache pour éviter les calculs inutiles --
+        last_computed_pos = -1.0 
         solve_lu = None  
         B_mat = None  
 
-        # Limite la fréquence d'affichage des logs pour ne pas polluer la console
         step_log_interval = max(1, n_steps // 10)
 
         for i in range(1, n_steps + 1):
             if i % step_log_interval == 0:
-                logger.debug(f"Progression de l'intégration : Étape {i}/{n_steps}") # Tout les X affiche un log
+                logger.debug(f"Progression : Étape {i}/{n_steps}")
 
-            # Le controleur analyse la situation et calcule la nouvelle position des barres
+            # Calcul de la nouvelle position des barres via le pilote (PID/PD)
             if pilot_callback is not None:
                 current_rod_pos = pilot_callback(phi_n, phi_prev, current_rod_pos, dt)
 
-            # -- MISE À JOUR DE LA PHYSIQUE --
-            # Si les barres ont bougé de plus de 1% (0.01), on est obligé de recalculer la physique.
-            # Sinon, on gagne du temps et on réutilise les anciennes matrices
+            # -- MISE À JOUR DE LA PHYSIQUE (CACHE LU) --
+            # On ne recalcule et ne factorise la matrice que si le mouvement est significatif (> 1%)
             if abs(current_rod_pos - last_computed_pos) > 0.01:
-                logger.info(
-                    f"Mouvement significatif des barres détecté (pos={current_rod_pos:.4f}). Re-calcul de la physique et factorisation LU..."
-                )
+                logger.info(f"Recalcul physique : Barres à {current_rod_pos:.4f}")
 
-                # On met à jour les matériaux (l'absorption change là où la barre s'est déplacée)
+                # Mise à jour des propriétés matériaux selon la nouvelle position
                 _, c_Sigma_a, c_nuSigma_f, _ = get_props_func(
-                    mesh,
-                    elem_tags,
-                    rod_insertion=current_rod_pos,
-                    user_mapping=user_mapping,
+                    mesh, elem_tags, rod_insertion=current_rod_pos, user_mapping=user_mapping
                 )
                 c_R = c_nuSigma_f - c_Sigma_a
 
-                # On ré-assemble uniquement la matrice de réaction (très rapide grâce à Numba)
-                self.R = assemble_mass_or_reaction(
-                    nn, ne, 3, len(w), elem_tags, det, w, N, c_R
-                )
+                # Ré-assemblage rapide de la réaction
+                self.R = assemble_mass_or_reaction(nn, ne, 3, len(w), elem_tags, det, w, N, c_R)
 
-                # Formules mathématiques du Schéma Theta
+                # Construction des opérateurs du Schéma Theta (Crank-Nicolson si theta=0.5)
                 L = self.R - self.K
                 A = (self.M - self.theta * dt * L).tocsc()
                 B_mat = (self.M + (1.0 - self.theta) * dt * L).tocsr()
 
-                # -- ZONE DE CALCUL INTENSIF --
-                # splu calcule la factorisation Lower-Upper de la matrice (pr triangulaire)
-                # C'est l'opération la plus lourde de tout le programme
-                # Elle pré-mâche le travail de résolution d'équation pour les prochaines étapes.
+                # Factorisation LU (Partie lourde)
                 A_FF = A[free_dofs, :][:, free_dofs]
                 solve_lu = pypardiso.factorized(A_FF)
 
-                # On sauvegarde la position dans notre système de cache
                 last_computed_pos = current_rod_pos
 
-            # -- RÉSOLUTION ÉCLAIR --
-            # Grâce au cache et à solve_lu calculé,
-            # trouver l'état du réacteur à l'instant suivant ne prend plus qu'une fraction de milliseconde.
+            # -- RÉSOLUTION DU SYSTÈME --
+            # Calcul du second membre (RHS)
             b_full = B_mat.dot(phi_n)
             rhs_reduced = b_full[free_dofs]
 
+            # Résolution rapide via la factorisation LU déjà prête
             phi_free_np1 = solve_lu(rhs_reduced)
 
-            # On reconstruit l'image complète du maillage en réintégrant les zéros sur les bords
+            # Reconstruction du vecteur complet (avec les bords à zéro)
             phi_np1 = np.zeros(nn)
             phi_np1[free_dofs] = phi_free_np1
+            phi_np1 = np.maximum(phi_np1, 1e-10) # Sécurité : Pas de flux négatif
 
-            # Sécurité physique : il y a toujours un léger bruit de fond neutronique naturel.
-            # On empêche la matrice de plonger mathématiquement en dessous de zéro.
-            phi_np1 = np.maximum(phi_np1, 1e-10)
-
-            # -- SAUVEGARDE OPTIMISÉE --
-            # On ne sauvegarde qu'une frame sur 2 (et la toute dernière)
-            # Ça divise par deux le travail d'animation de Matplotlib à la fin et économise la RAM.
+            # --- SAUVEGARDE OPTIMISÉE (SÉLECTIONNÉE) ---
+            # Correction cruciale : On ne sauvegarde le temps que si on sauvegarde la solution
             if i % 2 == 0 or i == n_steps:
                 solutions.append(phi_np1.copy())
+                saved_times.append(times_full[i])
 
-            # On avance dans le temps
+            # Passage à l'étape suivante
             phi_prev = phi_n.copy()
             phi_n = phi_np1
 
-        logger.info(
-            f"Fin de l'intégration. Position finale des barres : {current_rod_pos:.4f}"
-        )
-        return times, solutions, current_rod_pos
+        logger.info(f"Intégration terminée. Position finale : {current_rod_pos:.4f}")
+        
+        # On retourne un array numpy pour les temps pour être compatible avec Matplotlib
+        return np.array(saved_times), solutions, current_rod_pos

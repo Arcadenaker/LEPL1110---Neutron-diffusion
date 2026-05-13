@@ -465,7 +465,7 @@ def run_full_simulation(
             label="Consigne (Cible)",
         )
 
-        times_graphique = np.linspace(times[0], times[-1], len(solutions))
+        times_graphique = np.array(times)
 
         ax_curve.plot(
             times_graphique, puissances_mw, color="#555555", linewidth=1.5, zorder=1

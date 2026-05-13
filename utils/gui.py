@@ -1049,61 +1049,130 @@ class ReactorGUI(tk.Tk):
                 self.after(0, lambda m=err_txt: (messagebox.showerror("Erreur", m), top.destroy()))
 
         threading.Thread(target=worker, daemon=True).start()
+    def plot_overshoot_heatmap(self, thicknesses, target_rings, results_grid):
+        """
+        Affiche la cartographie discrète du pilotage.
+        Consomme une grille de dictionnaires [{'status': ..., 'overshoot_mw': ...}].
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+        from matplotlib.colors import Normalize
+        from matplotlib import cm
+        import numpy as np
 
-    def plot_overshoot_heatmap(self, thicknesses, target_rings, score_matrix):
-        plt.close("Cas 2 - Heatmap Optimisée")
-        fig, ax = plt.subplots(num="Cas 2 - Heatmap Optimisée", figsize=(10, 7))
+        plt.close("Cas 2 - Cartographie de Pilotage")
+        fig, ax = plt.subplots(num="Cas 2 - Cartographie de Pilotage", figsize=(12, 8))
         fig.patch.set_facecolor(self.BG_COLOR)
         ax.set_facecolor(self.PANEL_BG)
 
-        X, Y = np.meshgrid(target_rings, thicknesses)
+        # 1. PARAMÈTRES DE GRILLE STRICTE
+        # Calcul des demi-largeurs pour centrer les ticks
+        dx = (target_rings[1] - target_rings[0]) / 2.0 if len(target_rings) > 1 else 0.5
+        dy = (thicknesses[1] - thicknesses[0]) / 2.0 if len(thicknesses) > 1 else 1.0
 
-        # 1. Préparation de la matrice d'overshoot (on masque les codes de criticité)
-        # On ne garde que les valeurs positives pour la couleur
-        overshoot_view = np.where(score_matrix >= 0, score_matrix, np.nan)
+        # Normalisation pour le dégradé magma (0 à 5 MW)
+        norm = Normalize(vmin=0, vmax=5.0)
+        cmap = cm.get_cmap('magma')
+
+        # Couleurs fixes pour les états d'échec
+        COLORS = {
+            "SOUS_CRITIQUE": "#1a334d", # Bleu sombre mat
+            "SUR_CRITIQUE": "#4d1a1a",  # Rouge sombre mat
+            "ERREUR_GEOM": "#2d2d2d",   # Gris foncé mat
+            "ERREUR_SOLVEUR": "#2d2d2d" # Gris foncé mat
+        }
+
+        # 2. GÉNÉRATION CELLULE PAR CELLULE
+        for i, thick in enumerate(thicknesses):
+            for j, rings in enumerate(target_rings):
+                cell = results_grid[i][j]
+                status = cell["status"]
+                val = cell["overshoot_mw"]
+
+                # Détermination de la couleur de fond
+                if status == "STABLE":
+                    facecolor = cmap(norm(val))
+                    text_color = "white" if norm(val) < 0.6 else "black"
+                    label = f"{val:.4f}\nMW"
+                else:
+                    facecolor = COLORS.get(status, "#000000")
+                    text_color = "white"
+                    label = status.replace("_", "\n")
+
+                # Création de la case avec bordures explicites
+                rect = patches.Rectangle(
+                    (rings - dx, thick - dy), 
+                    dx * 2, dy * 2, 
+                    linewidth=1.5, 
+                    edgecolor=self.BORDER_COLOR, 
+                    facecolor=facecolor,
+                    zorder=2
+                )
+                ax.add_patch(rect)
+
+                # Annotation textuelle au centre géométrique
+                ax.text(
+                    rings, thick, label, 
+                    ha='center', va='center', 
+                    color=text_color, 
+                    fontsize=8, 
+                    fontweight='bold',
+                    zorder=3
+                )
+
+        # 3. RECHERECHE DE L'OPTIMUM (STRICTE)
+        best_val = float('inf')
+        best_coord = None
+
+        for i, thick in enumerate(thicknesses):
+            for j, rings in enumerate(target_rings):
+                cell = results_grid[i][j]
+                if cell["status"] == "STABLE" and cell["overshoot_mw"] < best_val:
+                    best_val = cell["overshoot_mw"]
+                    best_coord = (rings, thick)
+
+        if best_coord:
+            # Cadre vert fluo pour l'optimum
+            opt_rect = patches.Rectangle(
+                (best_coord[0] - dx, best_coord[1] - dy), 
+                dx * 2, dy * 2, 
+                linewidth=4, 
+                edgecolor='#00ff00', 
+                facecolor='none',
+                zorder=4
+            )
+            ax.add_patch(opt_rect)
+            ax.text(
+                best_coord[0], best_coord[1] + dy*0.7, "OPTIMUM", 
+                color='#00ff00', ha='center', fontweight='bold', fontsize=9, zorder=5
+            )
+
+        # 4. CONFIGURATION DES AXES ET LÉGENDE
+        ax.set_xticks(target_rings)
+        ax.set_yticks(thicknesses)
         
-        # Plafonnage pour la lisibilité
-        vmax = 5.0 
-        cp = ax.contourf(X, Y, np.clip(overshoot_view, 0, vmax), 
-                         levels=np.linspace(0, vmax, 20), cmap='magma', extend='max')
-        
-        cbar = fig.colorbar(cp, ax=ax)
-        cbar.set_label("Overshoot (MW)", color=self.FG_COLOR, fontweight='bold')
+        # Limites strictes pour éviter les marges blanches
+        ax.set_xlim(target_rings[0] - dx, target_rings[-1] + dx)
+        ax.set_ylim(thicknesses[0] - dy, thicknesses[-1] + dy)
 
-        # 2. Dessin des zones de CRITICITÉ (Hachures)
-        # Zone Sous-critique (Bleu hachuré)
-        ax.contourf(X, Y, score_matrix, levels=[-1.5, -0.5], 
-                    colors='none', hatches=['\\\\\\\\'], alpha=0)
-        # Zone Sur-critique / Divergente (Rouge hachuré)
-        ax.contourf(X, Y, score_matrix, levels=[-2.5, -1.5], 
-                    colors='none', hatches=['////'], alpha=0)
+        ax.set_xlabel("Nombre de couronnes de barres de contrôle", color=self.FG_COLOR, fontweight="bold")
+        ax.set_ylabel("Épaisseur du réflecteur (cm)", color=self.FG_COLOR, fontweight="bold")
+        ax.set_title("Optimisation Spatiale : Matrice de Stabilité et d'Overshoot", color="#00d2ff", pad=20)
 
-        # Ajout de légendes pour les hachures
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='none', edgecolor='cyan', hatch='\\\\\\\\', label='Zone Sous-critique (Cible non atteinte)'),
-            Patch(facecolor='none', edgecolor='red', hatch='////', label='Zone Sur-critique (Incontrôlable)'),
-            Patch(facecolor='#00ff00', label='Zone Opérationnelle (Stabilisée)')
-        ]
+        ax.tick_params(colors=self.FG_COLOR)
+        ax.grid(False) # Désactivation de la grille auto pour garder nos edges propres
 
-        # 3. Marquage de l'optimum (uniquement dans la zone opérationnelle)
-        valid_mask = score_matrix >= 0
-        if np.any(valid_mask):
-            # On cherche le min uniquement là où c'est opérationnel
-            temp_matrix = np.where(valid_mask, score_matrix, np.inf)
-            idx = np.unravel_index(np.argmin(temp_matrix), score_matrix.shape)
-            opt_t, opt_r = thicknesses[idx[0]], target_rings[idx[1]]
-            
-            ax.scatter(opt_r, opt_t, color='#00ff00', marker='*', s=300, edgecolor='white', zorder=5)
-            ax.annotate(f"Optimum: {score_matrix[idx]:.4f} MW", (opt_r, opt_t), 
-                        xytext=(15, 10), textcoords='offset points', color='#00ff00', fontweight='bold')
+        # Barre de couleur manuelle pour les cas STABLES
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label('Overshoot (MW) - Échelle de performance', color=self.FG_COLOR, fontweight='bold')
+        cbar.ax.yaxis.set_tick_params(color=self.FG_COLOR)
+        plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color=self.FG_COLOR)
 
-        ax.set_xlabel("Nombre de couche de barre de ctrl", color=self.FG_COLOR)
-        ax.set_ylabel("Épaisseur du réflecteur (cm)", color=self.FG_COLOR)
-        ax.legend(handles=legend_elements, loc='upper right', facecolor=self.PANEL_BG, labelcolor='white', fontsize=9)
-        
         plt.tight_layout()
         plt.show()
+  
     def action_run_case_3(self):
         """Lance l'étude de validation théorique (V&V)."""
         p_ui = self.get_current_params()
