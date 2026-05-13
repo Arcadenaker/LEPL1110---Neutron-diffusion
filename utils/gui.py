@@ -1050,52 +1050,60 @@ class ReactorGUI(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def plot_overshoot_heatmap(self, thicknesses, target_rings, overshoot_matrix):
-        """Affiche la carte thermique 2D de l'overshoot."""
-        plt.close("Cas 2 - Heatmap Overshoot")
-        fig, ax = plt.subplots(num="Cas 2 - Heatmap Overshoot", figsize=(10, 7))
+    def plot_overshoot_heatmap(self, thicknesses, target_rings, score_matrix):
+        plt.close("Cas 2 - Heatmap Optimisée")
+        fig, ax = plt.subplots(num="Cas 2 - Heatmap Optimisée", figsize=(10, 7))
         fig.patch.set_facecolor(self.BG_COLOR)
         ax.set_facecolor(self.PANEL_BG)
 
-        # Création de la grille pour le tracé
         X, Y = np.meshgrid(target_rings, thicknesses)
-        
-        # Tracé des contours remplis (Heatmap)
-        cp = ax.contourf(X, Y, overshoot_matrix, levels=20, cmap='magma')
-        
-        # Barre d'échelle
-        cbar = fig.colorbar(cp, ax=ax)
-        cbar.set_label('Overshoot (%)', color=self.FG_COLOR, fontweight='bold')
-        cbar.ax.yaxis.set_tick_params(color=self.FG_COLOR)
-        plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color=self.FG_COLOR)
 
-        # Recherche et marquage de l'optimum (valeur minimale)
-        if not np.all(np.isnan(overshoot_matrix)):
-            idx = np.unravel_index(np.nanargmin(overshoot_matrix), overshoot_matrix.shape)
+        # 1. Préparation de la matrice d'overshoot (on masque les codes de criticité)
+        # On ne garde que les valeurs positives pour la couleur
+        overshoot_view = np.where(score_matrix >= 0, score_matrix, np.nan)
+        
+        # Plafonnage pour la lisibilité
+        vmax = 5.0 
+        cp = ax.contourf(X, Y, np.clip(overshoot_view, 0, vmax), 
+                         levels=np.linspace(0, vmax, 20), cmap='magma', extend='max')
+        
+        cbar = fig.colorbar(cp, ax=ax)
+        cbar.set_label("Overshoot (MW)", color=self.FG_COLOR, fontweight='bold')
+
+        # 2. Dessin des zones de CRITICITÉ (Hachures)
+        # Zone Sous-critique (Bleu hachuré)
+        ax.contourf(X, Y, score_matrix, levels=[-1.5, -0.5], 
+                    colors='none', hatches=['\\\\\\\\'], alpha=0)
+        # Zone Sur-critique / Divergente (Rouge hachuré)
+        ax.contourf(X, Y, score_matrix, levels=[-2.5, -1.5], 
+                    colors='none', hatches=['////'], alpha=0)
+
+        # Ajout de légendes pour les hachures
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='none', edgecolor='cyan', hatch='\\\\\\\\', label='Zone Sous-critique (Cible non atteinte)'),
+            Patch(facecolor='none', edgecolor='red', hatch='////', label='Zone Sur-critique (Incontrôlable)'),
+            Patch(facecolor='#00ff00', label='Zone Opérationnelle (Stabilisée)')
+        ]
+
+        # 3. Marquage de l'optimum (uniquement dans la zone opérationnelle)
+        valid_mask = score_matrix >= 0
+        if np.any(valid_mask):
+            # On cherche le min uniquement là où c'est opérationnel
+            temp_matrix = np.where(valid_mask, score_matrix, np.inf)
+            idx = np.unravel_index(np.argmin(temp_matrix), score_matrix.shape)
             opt_t, opt_r = thicknesses[idx[0]], target_rings[idx[1]]
             
-            ax.scatter(opt_r, opt_t, color='#00ff00', marker='*', s=250, 
-                       edgecolor='white', label='Optimum Physique', zorder=5)
-            
-            ax.annotate(f"Idéal: {overshoot_matrix[idx]:.1f}%", 
-                        (opt_r, opt_t), xytext=(15, 15), 
-                        textcoords='offset points', color='#00ff00', fontweight='bold',
-                        arrowprops=dict(arrowstyle="->", color="#00ff00"))
+            ax.scatter(opt_r, opt_t, color='#00ff00', marker='*', s=300, edgecolor='white', zorder=5)
+            ax.annotate(f"Optimum: {score_matrix[idx]:.4f} MW", (opt_r, opt_t), 
+                        xytext=(15, 10), textcoords='offset points', color='#00ff00', fontweight='bold')
 
-        # Cosmétique scientifique
-        ax.set_xlabel("Position radiale de l'anneau (Indice)", color=self.FG_COLOR, fontweight="bold")
-        ax.set_ylabel("Épaisseur du réflecteur (cm)", color=self.FG_COLOR, fontweight="bold")
-        ax.set_title("Optimisation Spatiale du Pilotage (Overshoot)", 
-                     color=self.FG_COLOR, fontsize=12, fontweight="bold", pad=20)
-        
-        ax.set_xticks(target_rings)
-        ax.tick_params(colors=self.FG_COLOR)
-        ax.grid(True, linestyle=':', alpha=0.3)
-        ax.legend(facecolor=self.PANEL_BG, edgecolor=self.BORDER_COLOR, labelcolor=self.FG_COLOR)
+        ax.set_xlabel("Nombre de couche de barre de ctrl", color=self.FG_COLOR)
+        ax.set_ylabel("Épaisseur du réflecteur (cm)", color=self.FG_COLOR)
+        ax.legend(handles=legend_elements, loc='upper right', facecolor=self.PANEL_BG, labelcolor='white', fontsize=9)
         
         plt.tight_layout()
         plt.show()
-
     def action_run_case_3(self):
         """Lance l'étude de validation théorique (V&V)."""
         p_ui = self.get_current_params()

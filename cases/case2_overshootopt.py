@@ -53,7 +53,7 @@ def run_overshoot_analysis(params, progress_callback=None):
     user_mapping = {
         "Fuel": params.get("mat_fuel", "Fuel_Uranium"),
         "Moderator": params.get("mat_mod", "Water_Moderator"),
-        "Reflector": params.get("mat_ref", "Graphite_Moderator"),
+        "Reflector": params.get("mat_ref", "Beryllium_Reflector"),
         "ControlRods": params.get("mat_cr", "Boral_ControlRod"),
     }
 
@@ -61,14 +61,14 @@ def run_overshoot_analysis(params, progress_callback=None):
     for i, thick in enumerate(thicknesses):
         for j, ring_idx in enumerate(target_rings):
             current_step += 1
-            msg = f"Réflecteur: {thick}cm | Anneau CR: {ring_idx} | [{current_step}/{total_steps}]"
+            msg = f"Réflecteur: {thick}cm | Anneaux CR (1 à {ring_idx}): [{current_step}/{total_steps}]"
             if progress_callback:
                 progress_callback(current_step, total_steps, msg)
 
             geom = ReactorGeometry(R_n=R_noyau, R_hex=R_hex)
 
             # Surcharge locale de la topologie
-            def custom_tagged_assemblies(n_cr_rings=1, cr_density=1.0, r_idx=ring_idx):
+            def custom_tagged_assemblies(n_cr_rings=1, cr_density=1.0, max_ring=ring_idx):
                 centers = geom.hex_centers()
                 B_c = np.round(centers[:, 1] / (1.5 * R_hex))
                 A_c = np.round(centers[:, 0] / (R_hex * np.sqrt(3)) - B_c / 2)
@@ -77,7 +77,10 @@ def run_overshoot_analysis(params, progress_callback=None):
                 ).astype(int)
 
                 tags = np.full(len(centers), "FUEL", dtype=object)
-                mask_cr = d == r_idx
+                
+                # MODIFICATION : On sélectionne toutes les couronnes de 1 jusqu'à max_ring inclus
+                mask_cr = (d >= 1) & (d <= max_ring)
+                
                 tags[mask_cr] = "CR"
                 return centers, tags, d
 
@@ -86,7 +89,7 @@ def run_overshoot_analysis(params, progress_callback=None):
             m_params = {
                 "R_hex": R_hex,
                 "R_reflec": R_noyau + thick,
-                "cr_rings": 1,
+                "cr_rings": ring_idx, # Mise à jour pour refléter l'accumulation
                 "cr_density": 1.0,
                 "pins_fuel": params.get("pins_fuel", 4),
                 "pins_cr": params.get("pins_cr", 3),
@@ -97,34 +100,38 @@ def run_overshoot_analysis(params, progress_callback=None):
 
             try:
                 generator.generate(mesh_path)
+                
+                # 'puissance_history' contient tous les points Y de ta courbe bleue
                 solutions, times, puissance_history = run_full_simulation(
                     mesh_path, user_mapping=user_mapping, headless=True
                 )
 
-                # --- 4. ÉVALUATION DE LA PERFORMANCE (MÉTRIQUE RMSE) ---
+                # --- 4. ÉVALUATION DE LA PERFORMANCE ET CRITICITÉ ---
                 if len(puissance_history) > 10:
                     p_initiale = puissance_history[0]
                     p_cible = p_initiale * 1.5 
+                    p_finale = puissance_history[-1]
+                    p_max = np.max(puissance_history)
                     
-                    # On isole la seconde moitié de la simulation (régime censé être établi)
-                    idx_demi = len(puissance_history) // 2
-                    p_regime_etabli = np.array(puissance_history[idx_demi:])
+                    # Détection de la criticité
+                    # Sous-critique : le réacteur n'atteint pas 95% de la cible à la fin
+                    if p_finale < 0.95 * p_cible:
+                        score_matrix[i, j] = -1.0  # Code pour Sous-critique
                     
-                    # Calcul strict du RMSE relatif à la cible
-                    erreurs_relatives = (p_regime_etabli - p_cible) / p_cible
-                    rmse = np.sqrt(np.mean(erreurs_relatives**2)) * 100.0
+                    # Sur-critique / Divergent : la puissance finit 20% au dessus de la cible 
+                    # ou le pic est démesuré (> 5 MW d'overshoot)
+                    elif p_finale > 1.2 * p_cible or (p_max - p_cible) > 10.0:
+                        score_matrix[i, j] = -2.0  # Code pour Sur-critique / Incontrôlable
                     
-                    if np.isnan(rmse) or np.isinf(rmse):
-                        score_matrix[i, j] = 1000.0
                     else:
-                        score_matrix[i, j] = np.clip(rmse, 0.0, 1000.0)
+                        # Cas opérationnel : on calcule l'overshoot réel en MW
+                        score_matrix[i, j] = max(0.0, p_max - p_cible)
                 else:
                     score_matrix[i, j] = np.nan
 
             except Exception as e:
                 logger.error(f"Échec {msg} : {e}", exc_info=True)
                 score_matrix[i, j] = np.nan
-
             finally:
                 if os.path.exists(mesh_path):
                     try:
