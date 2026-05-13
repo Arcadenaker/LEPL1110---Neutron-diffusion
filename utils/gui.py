@@ -1056,54 +1056,64 @@ class ReactorGUI(tk.Tk):
         fig.patch.set_facecolor(self.BG_COLOR)
         ax.set_facecolor(self.PANEL_BG)
 
-        X, Y = np.meshgrid(target_rings, thicknesses)
-
-        # 1. Préparation de la matrice d'overshoot (on masque les codes de criticité)
-        # On ne garde que les valeurs positives pour la couleur
+        # On isole uniquement les valeurs valides pour la palette de couleur
         overshoot_view = np.where(score_matrix >= 0, score_matrix, np.nan)
         
-        # Plafonnage pour la lisibilité
-        vmax = 5.0 
-        cp = ax.contourf(X, Y, np.clip(overshoot_view, 0, vmax), 
-                         levels=np.linspace(0, vmax, 20), cmap='magma', extend='max')
-        
-        cbar = fig.colorbar(cp, ax=ax)
-        cbar.set_label("Overshoot (MW)", color=self.FG_COLOR, fontweight='bold')
+        # Configuration de la colormap
+        cmap = plt.cm.magma.copy()
+        cmap.set_bad(color="#2a2a2a")  # Couleur de fond pour les cases en erreur
 
-        # 2. Dessin des zones de CRITICITÉ (Hachures)
-        # Zone Sous-critique (Bleu hachuré)
-        ax.contourf(X, Y, score_matrix, levels=[-1.5, -0.5], 
-                    colors='none', hatches=['\\\\\\\\'], alpha=0)
-        # Zone Sur-critique / Divergente (Rouge hachuré)
-        ax.contourf(X, Y, score_matrix, levels=[-2.5, -1.5], 
-                    colors='none', hatches=['////'], alpha=0)
+        # Création de la grille discrète
+        im = ax.imshow(overshoot_view, cmap=cmap, origin='lower', aspect='auto')
 
-        # Ajout de légendes pour les hachures
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='none', edgecolor='cyan', hatch='\\\\\\\\', label='Zone Sous-critique (Cible non atteinte)'),
-            Patch(facecolor='none', edgecolor='red', hatch='////', label='Zone Sur-critique (Incontrôlable)'),
-            Patch(facecolor='#00ff00', label='Zone Opérationnelle (Stabilisée)')
-        ]
+        # Annotation de chaque cellule avec son statut ou sa valeur en MW
+        for i in range(len(thicknesses)):
+            for j in range(len(target_rings)):
+                val = score_matrix[i, j]
+                if np.isnan(val):
+                    ax.text(j, i, "Erreur", ha="center", va="center", color="gray", fontsize=9)
+                elif val == -1.0:
+                    ax.text(j, i, "Sous-Crit.\n(Raté)", ha="center", va="center", color="#00d2ff", fontsize=9, fontweight="bold")
+                elif val == -2.0:
+                    ax.text(j, i, "Sur-Crit.\n(Instable)", ha="center", va="center", color="#ff4444", fontsize=9, fontweight="bold")
+                else:
+                    # Affichage explicite de l'overshoot en MW
+                    ax.text(j, i, f"{val:.2f} MW", ha="center", va="center", color="white", fontweight="bold")
 
-        # 3. Marquage de l'optimum (uniquement dans la zone opérationnelle)
+        # Application des labels des axes selon les données
+        ax.set_xticks(np.arange(len(target_rings)))
+        ax.set_xticklabels(target_rings, color=self.FG_COLOR)
+        ax.set_yticks(np.arange(len(thicknesses)))
+        ax.set_yticklabels(thicknesses, color=self.FG_COLOR)
+
+        # Mise en évidence visuelle de la case Optimale (plus faible overshoot)
         valid_mask = score_matrix >= 0
         if np.any(valid_mask):
-            # On cherche le min uniquement là où c'est opérationnel
             temp_matrix = np.where(valid_mask, score_matrix, np.inf)
-            idx = np.unravel_index(np.argmin(temp_matrix), score_matrix.shape)
-            opt_t, opt_r = thicknesses[idx[0]], target_rings[idx[1]]
+            opt_idx = np.unravel_index(np.argmin(temp_matrix), score_matrix.shape)
             
-            ax.scatter(opt_r, opt_t, color='#00ff00', marker='*', s=300, edgecolor='white', zorder=5)
-            ax.annotate(f"Optimum: {score_matrix[idx]:.4f} MW", (opt_r, opt_t), 
-                        xytext=(15, 10), textcoords='offset points', color='#00ff00', fontweight='bold')
+            # Dessine un contour vert fluo autour de la meilleure configuration
+            import matplotlib.patches as patches
+            rect = patches.Rectangle((opt_idx[1] - 0.5, opt_idx[0] - 0.5), 1, 1, fill=False, edgecolor='#00ff00', lw=3, zorder=5)
+            ax.add_patch(rect)
+            
+            ax.set_title(f"Optimisation de l'Overshoot (Optimum: {score_matrix[opt_idx]:.2f} MW)", color=self.TITLE_COLOR, fontsize=12, fontweight='bold')
+        else:
+            ax.set_title("Optimisation de l'Overshoot (Aucune configuration viable)", color=self.TITLE_COLOR, fontsize=12, fontweight='bold')
 
-        ax.set_xlabel("Nombre de couche de barre de ctrl", color=self.FG_COLOR)
-        ax.set_ylabel("Épaisseur du réflecteur (cm)", color=self.FG_COLOR)
-        ax.legend(handles=legend_elements, loc='upper right', facecolor=self.PANEL_BG, labelcolor='white', fontsize=9)
-        
+        # Formatage de la barre d'échelle
+        cbar = fig.colorbar(im, ax=ax)
+        cbar.set_label("Overshoot Cible ↔ Max (MW)", color=self.FG_COLOR, fontweight='bold')
+        cbar.ax.yaxis.set_tick_params(color=self.FG_COLOR, labelcolor=self.FG_COLOR)
+
+        ax.set_xlabel("Nombre de couronnes de barres de contrôle", color=self.FG_COLOR, fontweight="bold")
+        ax.set_ylabel("Épaisseur du réflecteur (cm)", color=self.FG_COLOR, fontweight="bold")
+        ax.tick_params(color=self.BORDER_COLOR)
+
         plt.tight_layout()
         plt.show()
+
+        
     def action_run_case_3(self):
         """Lance l'étude de validation théorique (V&V)."""
         p_ui = self.get_current_params()
